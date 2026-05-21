@@ -17,6 +17,7 @@ const {
   saveAnalysisCache,
 } = require('../lib/analysis-cache');
 const { getBalance, applyCreditDelta, debitOrdered } = require('../lib/credits');
+const { persistAnalysisResult } = require('../lib/persistAnalysis');
 // Limiteur de requêtes ciblé : appliqué UNIQUEMENT sur les routes coûteuses
 // (/start, /diagnose). PAS sur /status/:jobId qui est pollé toutes les 3s
 // pendant toute la durée de l'analyse (sinon 429 dès le 11ᵉ poll).
@@ -283,6 +284,26 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
         if (!Number.isFinite(n) || n < 30 || n > 300) return null;
         return n;
       })();
+      // projectId : optionnel — si le front a choisi un projet précis dans
+      // AddModal, on le passe ici. Sinon persistAnalysisResult retombera sur
+      // le projet par défaut de l'utilisateur (premier projet, ou crée
+      // "Mon premier projet"). Validation : format uuid v4.
+      const projectIdRaw = req.body.projectId;
+      const projectId = (typeof projectIdRaw === 'string'
+        && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(projectIdRaw))
+        ? projectIdRaw
+        : null;
+      // copyrightAcknowledgedAt : timestamp ISO de l'acceptation copyright dans
+      // AddModal (migration 029). Sert à l'audit GDPR de droits d'auteur.
+      const copyrightAcknowledgedAt = (typeof req.body.copyrightAcknowledgedAt === 'string'
+        && req.body.copyrightAcknowledgedAt.trim().length > 0)
+        ? req.body.copyrightAcknowledgedAt.trim()
+        : null;
+      // vocalType : passé par AddModal pour les nouveaux titres. Validation
+      // côté helper, ici on relaie tel quel.
+      const vocalType = (typeof req.body.vocalType === 'string' && req.body.vocalType.trim().length > 0)
+        ? req.body.vocalType.trim()
+        : null;
 
       let fileBuffer = null, fileMime = null, fileName = null;
       // Path historique : multipart upload via multer.
@@ -393,6 +414,38 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
         }, 700);
         const storagePathFast = await storagePromiseFast;
         clearInterval(lissageTicker);
+
+        // Persistance backend (fix architectural 2026-05-21) — même logique
+        // que le chemin pipeline complet, branchée ici sur le cache hit.
+        let persistResultFast = { ok: false, error: null };
+        if (userId && cachedAnalysis?.fiche) {
+          persistResultFast = await persistAnalysisResult({
+            userId,
+            title: title || 'Titre inconnu',
+            versionName: version || 'v1',
+            projectId,
+            vocalType,
+            fiche: cachedAnalysis.fiche,
+            listening: cachedAnalysis.listening || null,
+            evolution: null,
+            intent_used: inlineIntent || null,
+            fadrMetrics: cachedAnalysis.fadrMetrics || null,
+            dspMetrics: cachedAnalysis.dspMetrics || null,
+            stemsMetrics: cachedAnalysis.stemsMetrics || null,
+            stereoMetrics: cachedAnalysis.stereoMetrics || null,
+            storagePath: storagePathFast || null,
+            audioHash: cacheAudioHash || null,
+            locale,
+            uploadType,
+            copyrightAcknowledgedAt,
+          });
+          if (!persistResultFast.ok) {
+            console.warn('[analyze] persistAnalysisResult (cache hit) failed:', persistResultFast.error);
+          }
+        } else {
+          persistResultFast = { ok: false, error: userId ? 'no_cached_fiche' : 'no_user_id' };
+        }
+
         const curFast = jobs.get(jobId) || {};
         jobs.set(jobId, {
           ...curFast,
@@ -409,6 +462,10 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
           intent_used: inlineIntent || null,
           pmSources: [],
           audioHash: cacheAudioHash,
+          // Persistance backend — voir lib/persistAnalysis.js
+          persistedTrackId: persistResultFast.ok ? persistResultFast.trackId : null,
+          persistedVersionId: persistResultFast.ok ? persistResultFast.versionId : null,
+          persistError: persistResultFast.ok ? null : (persistResultFast.error || 'unknown'),
         });
         // Cache hit = pas d appel modele = on rembourse le credit qui a ete
         // debite en amont (line ~185). Sinon l'utilisateur paie pour zero appel.
@@ -806,6 +863,42 @@ async function runDiagnosticPhase(jobId, ctx) {
   // Attend la fin du transcodage/upload (peut avoir fini depuis longtemps)
   const storagePath = storagePromise ? await storagePromise : null;
 
+  // ── PERSISTANCE BACKEND (fix architectural 2026-05-21) ────────────
+  // Insère directement tracks/versions via service_role AVANT de marquer
+  // le job `complete`. Comme ça, dès que le client voit complete, il a
+  // aussi `persistedTrackId` et `persistedVersionId` dans la réponse →
+  // plus jamais de crédit perdu sur tab fermée. Si la persist échoue, on
+  // log mais on ne casse pas le job (le front retombe sur saveAnalysis
+  // comme avant pour ne pas régresser).
+  let persistResult = { ok: false, error: null };
+  if (userId && fiche) {
+    persistResult = await persistAnalysisResult({
+      userId,
+      title: title || 'Titre inconnu',
+      versionName: version || 'v1',
+      projectId,
+      vocalType,
+      fiche,
+      listening,
+      evolution,
+      intent_used: intent || null,
+      fadrMetrics,
+      dspMetrics,
+      stemsMetrics,
+      stereoMetrics,
+      storagePath,
+      audioHash: cacheAudioHash || null,
+      locale,
+      uploadType,
+      copyrightAcknowledgedAt,
+    });
+    if (!persistResult.ok) {
+      console.warn('[analyze] persistAnalysisResult failed:', persistResult.error);
+    }
+  } else {
+    persistResult = { ok: false, error: userId ? 'no_fiche' : 'no_user_id' };
+  }
+
   const cur = jobs.get(jobId) || {};
   jobs.set(jobId, {
     ...cur,
@@ -821,6 +914,12 @@ async function runDiagnosticPhase(jobId, ctx) {
     // Phase 3 (DSP_PLAN B.4) — mesures par stem et champ stereo.
     stemsMetrics: stemsMetrics || null, // [{stemType, lufs, truePeak, energyBand_*, ...}] ou null
     stereoMetrics: stereoMetrics || null, // {correlation, midSideRatio, balanceLR, monoCompat} ou null
+    // Persistance backend (cf. lib/persistAnalysis.js) — si ok, le front
+    // peut sauter saveAnalysis et lire ces IDs directement. Si ko, le front
+    // retombe sur saveAnalysis comme historiquement (compat).
+    persistedTrackId: persistResult.ok ? persistResult.trackId : null,
+    persistedVersionId: persistResult.ok ? persistResult.versionId : null,
+    persistError: persistResult.ok ? null : (persistResult.error || 'unknown'),
     pmSources: (pmChunks || []).map(c => ({
       source_file: c.source_file,
       category: c.category,
