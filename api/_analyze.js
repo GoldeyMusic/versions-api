@@ -673,6 +673,8 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
             uploadType,
             userBpm, // override Fadr si saisi par l artiste
             cacheAudioHash, cacheParamsSig, // cache fiche (migration 031)
+            // Plumbés pour persistAnalysisResult (commit 9427693)
+            projectId, vocalType, copyrightAcknowledgedAt,
           },
         });
         return; // on ATTEND un POST /diagnose/:jobId pour reprendre
@@ -691,6 +693,8 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
         intent: inlineIntent, // null si skip
         declaredGenre, genreUnknown,
         uploadType,
+        // Plumbés pour persistAnalysisResult (commit 9427693)
+        projectId, vocalType, copyrightAcknowledgedAt,
       });
     } catch (err) {
       console.error('[analyze] error:', err.message);
@@ -743,7 +747,7 @@ router.post('/diagnose/:jobId', analyzeLimiter, express.json(), (req, res) => {
 // Utilise par /start (skipIntent) et par /diagnose/:jobId.
 async function runDiagnosticPhase(jobId, ctx) {
   const {
-    mode, daw, title, artist,
+    mode, daw, title, artist, version,
     userId,
     durationSeconds, previousFiche, previousAnalysisResult, previousCompletions,
     locale,
@@ -754,6 +758,11 @@ async function runDiagnosticPhase(jobId, ctx) {
     uploadType,
     userBpm, // override Fadr si saisi par l artiste
     cacheAudioHash, cacheParamsSig, // cache fiche (migration 031)
+    // ↓ Champs utilises par persistAnalysisResult — l oubli de ces 4 dans le
+    // destructuring causait un ReferenceError lors de la construction des
+    // options persist, qui propageait au catch externe et marquait le job
+    // en `status:error` (cf. bug 2026-05-21, commit 9427693).
+    projectId, vocalType, copyrightAcknowledgedAt,
   } = ctx;
 
   // ── ATTENTE Fadr + DSP en parallele (avec timeouts independants) ──
