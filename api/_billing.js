@@ -182,8 +182,12 @@ async function handleStripeEvent(event, stripe) {
   // Abo : facturation mensuelle (initiale OU renouvellement) → crédite N
   if (event.type === 'invoice.paid') {
     const invoice = event.data.object;
-    if (!invoice.subscription) return; // facture orpheline, ignore
-    await handleSubscriptionInvoice({ invoice, stripe, eventId: event.id });
+    const subscriptionId = getInvoiceSubscriptionId(invoice);
+    if (!subscriptionId) {
+      console.log(`[billing/webhook] invoice.paid without subscription (invoice ${invoice.id}) → ignored`);
+      return;
+    }
+    await handleSubscriptionInvoice({ invoice, subscriptionId, stripe, eventId: event.id });
     return;
   }
 
@@ -360,8 +364,11 @@ async function fetchStripeNet({ stripe, paymentIntentId = null, chargeId = null,
 }
 
 // ─── Abo : facture mensuelle → crédite + maj monthly_grant ────
-async function handleSubscriptionInvoice({ invoice, stripe, eventId }) {
-  const subscriptionId = invoice.subscription;
+async function handleSubscriptionInvoice({ invoice, subscriptionId, stripe, eventId }) {
+  // subscriptionId est résolu en amont par getInvoiceSubscriptionId() pour
+  // tolérer le déplacement du champ vers invoice.parent.subscription_details
+  // dans l'API Stripe 2025-04-30.basil (et plus récentes).
+  if (!subscriptionId) subscriptionId = getInvoiceSubscriptionId(invoice);
   // Récupère la subscription pour lire metadata.user_id
   const sub = await stripe.subscriptions.retrieve(subscriptionId, { expand: ['items.data.price'] });
   const userId = sub?.metadata?.user_id;
@@ -392,7 +399,10 @@ async function handleSubscriptionInvoice({ invoice, stripe, eventId }) {
   });
 
   // Met à jour les méta abo sur user_credits
-  const renewsAt = sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null;
+  // current_period_end : champ déplacé sur l'item dans l'API 2025-09-30.clover
+  // (Stripe a migré le concept au niveau item pour les abos multi-prix).
+  const periodEndSec = sub.current_period_end || item?.current_period_end || null;
+  const renewsAt = periodEndSec ? new Date(periodEndSec * 1000).toISOString() : null;
   await sb.from('user_credits')
     .update({
       monthly_grant: credits,
@@ -403,8 +413,11 @@ async function handleSubscriptionInvoice({ invoice, stripe, eventId }) {
     .eq('user_id', userId);
 
   // Log revenue : récupère le VRAI net via balance_transaction.fee Stripe.
+  // Le champ invoice.charge a été supprimé en API 2025-04-30.basil au profit
+  // de invoice.payments — on délègue le lookup à fetchStripeNetForInvoice
+  // qui tolère les deux formats.
   const grossEur = (invoice.amount_paid || 0) / 100;
-  const { netEur } = await fetchStripeNet({ stripe, chargeId: invoice.charge, grossEur });
+  const { netEur } = await fetchStripeNetForInvoice({ stripe, invoice, grossEur });
   await logRevenueEvent({
     sb, userId,
     source: 'stripe',
@@ -521,6 +534,62 @@ async function notifyRefund({ event, stripe }) {
       footerLink: stripeUrl({ livemode, kind: 'payments', id: charge.payment_intent }),
     }),
   });
+}
+
+// ─── Compat Stripe API : lookup subscription/charge sur Invoice ────
+// L'API Stripe 2025-04-30.basil a restructuré l'objet Invoice :
+//   - `invoice.subscription`        → `invoice.parent.subscription_details.subscription`
+//   - `invoice.charge`              → supprimé, lookup via `invoice.payments`
+// On supporte les deux formats pour rester tolérant à la version API
+// utilisée par l'endpoint webhook (configurable dans le dashboard Stripe).
+function getInvoiceSubscriptionId(invoice) {
+  if (!invoice) return null;
+  if (typeof invoice.subscription === 'string' && invoice.subscription) return invoice.subscription;
+  if (invoice.subscription && typeof invoice.subscription.id === 'string') return invoice.subscription.id;
+  const fromParent = invoice.parent?.subscription_details?.subscription;
+  if (typeof fromParent === 'string' && fromParent) return fromParent;
+  if (fromParent && typeof fromParent.id === 'string') return fromParent.id;
+  return null;
+}
+
+// Récupère le net Stripe à partir d'une Invoice, en tolérant le format basil
+// (plus de invoice.charge). On essaye dans l'ordre :
+//   1. invoice.charge (API legacy)
+//   2. invoice.payments[].payment.charge (API basil, après expand)
+//   3. invoice.payments[].payment.payment_intent (API basil)
+//   4. Fallback approximation EEE
+async function fetchStripeNetForInvoice({ stripe, invoice, grossEur }) {
+  const directChargeId = invoice?.charge;
+  if (directChargeId) {
+    return fetchStripeNet({ stripe, chargeId: directChargeId, grossEur });
+  }
+  // Format basil : refetch l'invoice avec expand sur payments → payment → payment_intent.
+  try {
+    const full = await stripe.invoices.retrieve(invoice.id, {
+      expand: ['payments.data.payment.payment_intent', 'payments.data.payment.charge'],
+    });
+    const payments = full?.payments?.data || [];
+    for (const p of payments) {
+      const payment = p?.payment || p;
+      const chargeId = typeof payment?.charge === 'string'
+        ? payment.charge
+        : payment?.charge?.id;
+      if (chargeId) {
+        return fetchStripeNet({ stripe, chargeId, grossEur });
+      }
+      const piId = typeof payment?.payment_intent === 'string'
+        ? payment.payment_intent
+        : payment?.payment_intent?.id;
+      if (piId) {
+        return fetchStripeNet({ stripe, paymentIntentId: piId, grossEur });
+      }
+    }
+  } catch (e) {
+    console.warn('[billing] fetchStripeNetForInvoice expand failed:', e.message);
+  }
+  // Approximation finale
+  const netApprox = grossEur > 0 ? Math.round((grossEur - (grossEur * 0.015 + 0.25)) * 100) / 100 : 0;
+  return { netEur: netApprox, feeEur: grossEur - netApprox, source: 'approximation_eee' };
 }
 
 let _sbServiceRole = null;
