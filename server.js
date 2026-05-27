@@ -65,6 +65,13 @@ app.use('/api/internal', require('./api/_internal'));
 // (cf. _account.js pour le détail du flow et de la sécurité).
 app.use('/api/account', require('./api/_account'));
 
+// ─── Newsletter mensuelle ─────────────────────────────────────────
+// POST /api/newsletter/send    → tire la newsletter pour tous les users
+// GET  /api/newsletter/preview → preview HTML pour un email donné
+// Gated par X-Admin-Secret (cf. _newsletter.js). Pas de requireAuth :
+// l'auth se fait via shared secret (cron externe, pas un user authentifié).
+app.use('/api/newsletter', require('./api/_newsletter'));
+
 // ─── Endpoints authentifiés ───────────────────────────────────────
 // Tous ces routers exigent un Bearer JWT Supabase. requireAuth pose
 // req.user.id et req.user.email. Les endpoints DOIVENT utiliser
