@@ -20,6 +20,9 @@
  *   - Abo annulé      : event `customer.subscription.deleted`
  *                       → purge subscription_balance (bucket sub à 0), pack_balance intact
  *                       → reset monthly_grant à 0
+ *   - Intention d'annulation : event `customer.subscription.updated` avec
+ *                       cancel_at_period_end qui passe false → true
+ *                       → notif ops uniquement, pas de mouvement DB
  *
  * Tous les events sont aussi loggés dans `revenue_logs` pour le suivi business.
  */
@@ -246,6 +249,76 @@ async function handleStripeEvent(event, stripe) {
           { label: 'Plan', value: planKey },
           { label: 'Crédits abo purgés', value: purged > 0 ? `−${purged}` : '0 (aucun restant)' },
           { label: 'User ID', value: userId },
+          { label: 'Subscription', value: sub.id, link: stripeUrl({ livemode, kind: 'subscriptions', id: sub.id }) },
+          { label: 'Customer', value: sub.customer, link: stripeUrl({ livemode, kind: 'customers', id: sub.customer }) },
+          { label: 'Mode', value: livemode ? 'live' : 'test' },
+        ],
+        footerLink: stripeUrl({ livemode, kind: 'subscriptions', id: sub.id }),
+      }),
+    });
+    return;
+  }
+
+  // Intention d'annulation : le user a cliqué "annuler mon abo" mais l'abo
+  // court jusqu'à la fin de la période payée. Stripe fire customer.subscription
+  // .updated avec cancel_at_period_end qui passe de false → true.
+  //
+  // On NE touche ni aux crédits ni au statut côté DB (l'abo est encore actif
+  // jusqu'à current_period_end ; on attendra customer.subscription.deleted
+  // pour purger). C'est juste une alerte ops → opportunité de save/follow-up.
+  //
+  // Filtre strict via previous_attributes pour éviter de spammer : Stripe
+  // émet `subscription.updated` sur plein de changements unrelated (price,
+  // payment method, period rollover…). On ne notifie que sur la transition
+  // précise false → true.
+  if (event.type === 'customer.subscription.updated') {
+    const sub = event.data.object;
+    const prev = event.data.previous_attributes || {};
+    const justRequestedCancel = 'cancel_at_period_end' in prev
+      && prev.cancel_at_period_end === false
+      && sub.cancel_at_period_end === true;
+    if (!justRequestedCancel) {
+      // Tout autre changement (plan, PM, etc.) → silencieux, on n'a pas de
+      // logique métier dessus pour l'instant.
+      return;
+    }
+
+    const userId = sub?.metadata?.user_id;
+    if (!userId) {
+      console.warn('[billing/webhook] subscription.updated (cancel-intent) without metadata.user_id, notif only');
+    }
+
+    // Récupère l'email client (sub.customer = ID string)
+    let customerEmail = '—';
+    if (sub.customer && typeof sub.customer === 'string') {
+      try {
+        const cust = await stripe.customers.retrieve(sub.customer);
+        customerEmail = cust?.email || '—';
+      } catch (e) {
+        console.warn('[notifyOps] retrieve customer failed for sub.updated (cancel-intent):', e.message);
+      }
+    }
+
+    // Date de fin prévue : cancel_at si présent (Stripe le pose quand
+    // cancel_at_period_end=true), sinon current_period_end. Timestamps Stripe
+    // = Unix seconds.
+    const endTs = sub.cancel_at || sub.current_period_end || null;
+    const endLabel = endTs
+      ? new Date(endTs * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+      : '—';
+
+    const planKey = sub?.metadata?.plan_key || 'subscription';
+    const livemode = !!event.livemode;
+    await notifyOps({
+      subject: `[Versions] Intention d'annulation · ${planKey}`,
+      html: renderOpsEmail({
+        title: `Intention d'annulation · ${planKey}`,
+        intro: `${customerEmail} a demandé à annuler l'abonnement ${planKey}. L'abo reste actif jusqu'à la date de fin prévue, puis sera purgé automatiquement.`,
+        rows: [
+          { label: 'Client', value: customerEmail },
+          { label: 'Plan', value: planKey },
+          { label: 'Fin prévue', value: endLabel },
+          { label: 'User ID', value: userId || '— (metadata.user_id absent)' },
           { label: 'Subscription', value: sub.id, link: stripeUrl({ livemode, kind: 'subscriptions', id: sub.id }) },
           { label: 'Customer', value: sub.customer, link: stripeUrl({ livemode, kind: 'customers', id: sub.customer }) },
           { label: 'Mode', value: livemode ? 'live' : 'test' },
