@@ -83,8 +83,16 @@ router.post('/send', express.json({ limit: '4kb' }), async (req, res) => {
     // SQL change (cf. resolveMonth({wide}) dans lib/newsletter.js).
     const wide = req.query.wide === '1' || req.query.wide === 'true'
               || req.query.first === '1' || req.query.first === 'true';
+    // only=email1,email2 → cible uniquement ces emails, bypass la liste
+    // d'exclusion admin. Indispensable pour que David/Abakan reçoivent
+    // la newsletter (sinon filtrés par défaut), ou pour des test sends
+    // ciblés. Whitelist comma-separated, lowercased, trimmed.
+    const onlyParam = (req.query.only || '').toString().trim();
+    const onlyEmails = onlyParam
+      ? onlyParam.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+      : null;
 
-    const summary = await sendNewsletterToAll({ month, wide, dryRun });
+    const summary = await sendNewsletterToAll({ month, wide, dryRun, onlyEmails });
     res.json({ ok: true, ...summary });
   } catch (err) {
     console.error('[newsletter/send] failed:', err.message, err.stack);
