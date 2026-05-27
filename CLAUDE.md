@@ -237,3 +237,14 @@ question "masterisé ?").
   un event sur transient failure → mail dupliqué. Pas de table dédiée
   pour l'instant. Si ça devient bruyant, créer `notified_stripe_events`
   avec UNIQUE sur `event_id`.
+- **Enrichir le pool de conseils newsletter** (`lib/newsletter.js`) —
+  actuellement `CONSEILS_DU_MOIS` = 12 entrées (un par mois, rotatif
+  annuel) et `IDEES_PROCHAINE_SESSION` = 4 entrées (template inactif).
+  Les users qui restent abonnés reçoivent toujours le même conseil au
+  même mois d'une année sur l'autre. Passer à **36+ tips** côté actif
+  (mix, monitoring, workflow DAW, mastering prep) et étoffer les idées
+  du template inactif. Stratégie de rotation à revoir : hash
+  `(userId, month)` pour ne pas envoyer 2 fois le même conseil à un
+  même user. **À terme** : conseils dynamiques basés sur les vraies
+  analyses du mois (recurring weaknesses dans les fiches → conseil
+  ciblé). Tracké aussi dans `~/versions-app/docs/ROADMAP.md` Bloc 4.
