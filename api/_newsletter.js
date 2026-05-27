@@ -44,13 +44,22 @@ const { sendNewsletterToAll, buildNewsletter, findUserByEmail } = require('../li
 const router = express.Router();
 
 // ─── Auth shared secret ───────────────────────────────────────────
+// Accepte le secret dans deux sources :
+//   1. Header `X-Admin-Secret`  → cron, curl, postman (recommandé)
+//   2. Query string `?secret=`  → fallback pour pouvoir déclencher
+//      depuis Safari mobile (impossible d'envoyer un header custom
+//      depuis la barre d'adresse).
+// Tradeoff query : le secret apparaît dans les logs serveur, l'historique
+// browser et les éventuels logs proxy. Acceptable ici parce qu'il sert
+// uniquement à gater une route admin (pas un user-facing endpoint), mais
+// privilégier le header dès qu'on a un client capable.
 function requireAdmin(req, res, next) {
   const want = process.env.ADMIN_SECRET;
   if (!want) {
     console.error('[newsletter] ADMIN_SECRET not configured on server');
     return res.status(500).json({ error: 'admin_secret_not_configured' });
   }
-  const got = req.headers['x-admin-secret'];
+  const got = req.headers['x-admin-secret'] || req.query.secret;
   if (!got || got !== want) {
     return res.status(401).json({ error: 'unauthorized' });
   }
