@@ -76,8 +76,15 @@ router.post('/send', express.json({ limit: '4kb' }), async (req, res) => {
   try {
     const month = (req.query.month || '').toString() || null;
     const dryRun = req.query.dry === '1' || req.query.dry === 'true';
+    // wide=1 (alias: first=1) → étend la fenêtre de stats à 2 mois au lieu
+    // d'un seul. Utilisé pour le tout premier envoi de la newsletter, pour
+    // que les users récents voient leurs analyses du mois d'avant aussi.
+    // Le titre du mail reste "Ton mois de <mois cible>" — seul le filtre
+    // SQL change (cf. resolveMonth({wide}) dans lib/newsletter.js).
+    const wide = req.query.wide === '1' || req.query.wide === 'true'
+              || req.query.first === '1' || req.query.first === 'true';
 
-    const summary = await sendNewsletterToAll({ month, dryRun });
+    const summary = await sendNewsletterToAll({ month, wide, dryRun });
     res.json({ ok: true, ...summary });
   } catch (err) {
     console.error('[newsletter/send] failed:', err.message, err.stack);
@@ -94,6 +101,8 @@ router.get('/preview', async (req, res) => {
     }
     const month = (req.query.month || '').toString() || null;
     const format = (req.query.format || 'html').toString();
+    const wide = req.query.wide === '1' || req.query.wide === 'true'
+              || req.query.first === '1' || req.query.first === 'true';
 
     const user = await findUserByEmail(email);
     if (!user) {
@@ -106,6 +115,7 @@ router.get('/preview', async (req, res) => {
       prenom: user.prenom,
       displayName: user.displayName,
       month,
+      wide,
     });
 
     if (format === 'json') {
