@@ -34,7 +34,7 @@ selon la route :
 | `/api/audio`         | `requireAuth` + audioLimiter      | Signed URL audio |
 | `/api/storage`       | `requireAuth` + storageLimiter    | Upload direct Storage |
 | `/api/account`       | mixte (Bearer ou token signé)     | Request/confirm deletion |
-| `/api/billing`       | Bearer pour `/checkout`, signature Stripe pour `/webhook` | Stripe |
+| `/api/billing`       | Bearer pour `/checkout` + `/cancel-subscription`, signature Stripe pour `/webhook` | Stripe |
 | `/api/internal`      | `X-Notify-Secret`                 | Webhooks Supabase DB (signup, deletion, feedback) |
 | `/api/newsletter`    | `X-Admin-Secret` (ou `?secret=`)  | Newsletter mensuelle |
 
@@ -184,6 +184,18 @@ Optionnelles :
 
 ## Livré récemment
 
+**2026-05-31** :
+- **Endpoint `POST /api/billing/cancel-subscription`** dans `api/_billing.js`.
+  Auth Bearer JWT. Lookup `stripe_subscription_id` dans `user_credits`,
+  appelle `stripe.subscriptions.update(subId, { cancel_at_period_end: true })`.
+  Idempotent (no-op silencieux si déjà `cancel_at_period_end` ou
+  `status: 'canceled'`). Renvoie `{ ok: false, reason: 'missing_sub_id' }`
+  si l'user a un `monthly_grant > 0` mais pas de `stripe_subscription_id`
+  côté DB (cas des abos pré-fix-webhook 2026-05-27) — le front bascule
+  alors sur le mailto contact, pas de régression. La notif ops part
+  automatiquement via le handler `customer.subscription.updated`
+  existant (event coché côté Stripe Dashboard 2026-05-31).
+
 **2026-05-27** :
 - **Newsletter mensuelle utilisateurs** (`lib/newsletter.js`,
   `api/_newsletter.js`, mount dans `server.js`). Stats par user via
@@ -216,10 +228,6 @@ question "masterisé ?").
 
 ## Points en suspens
 
-- **Cocher `customer.subscription.updated` dans les Listened events
-  du webhook Stripe** (dashboard.stripe.com → Developers → Webhooks
-  → endpoint prod). Sans ce check, le nouveau handler cancel-intent
-  (commit `bedf633`) ne sera jamais appelé.
 - **Configurer cron mensuel newsletter** sur cron-job.org (ou Railway
   cron) — `0 9 1 * *`, POST `https://<api>/api/newsletter/send` avec
   header `X-Admin-Secret`. Sans `?wide=1` (le premier envoi manuel l'a
