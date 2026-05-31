@@ -132,6 +132,103 @@ router.post('/checkout', express.json({ limit: '10kb' }), async (req, res) => {
   }
 });
 
+// ─── POST /cancel-subscription — résiliation à la fin de période ────
+//
+// Body : aucun. Auth Bearer JWT Supabase.
+// Réponse :
+//   { ok: true, cancelAt: <unix-ts>, alreadyCancelled?: true }
+//   { ok: false, reason: 'missing_sub_id' | 'no_subscription' | 'stripe_failed' }
+//
+// On NE supprime PAS l'abo immédiatement : on positionne
+// `cancel_at_period_end: true` côté Stripe. L'user garde l'accès
+// jusqu'à la fin de la période déjà payée, puis Stripe fire
+// `customer.subscription.deleted` qui purgera le subscription_balance
+// côté DB via le handler webhook existant.
+//
+// La notif ops part automatiquement via le handler
+// `customer.subscription.updated` (transition cancel_at_period_end
+// false→true détectée via previous_attributes). À condition que
+// l'event `customer.subscription.updated` soit coché dans le webhook
+// Stripe (cf. Points en suspens du CLAUDE.md).
+//
+// Idempotence : si `cancel_at_period_end` est déjà true côté Stripe,
+// on renvoie { ok: true, alreadyCancelled: true } sans rappeler l'API
+// (sinon previous_attributes serait vide et la notif ops ne fire pas
+// — mais surtout c'est inutile).
+//
+// Fallback : si `stripe_subscription_id` est NULL côté DB (cas du bug
+// webhook ancien — cf. Sébastien Stiennon 2026-05-21), on renvoie
+// `missing_sub_id` et le front bascule sur le mailto contact.
+router.post('/cancel-subscription', express.json({ limit: '1kb' }), async (req, res) => {
+  try {
+    const user = await getAuthedUser(req);
+    if (!user) return res.status(401).json({ ok: false, error: 'unauthorized' });
+
+    // Lookup du sub_id côté DB (service role pour bypasser RLS)
+    const sb = getSbServiceRole();
+    const { data: row, error: rowErr } = await sb
+      .from('user_credits')
+      .select('stripe_subscription_id, monthly_grant')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (rowErr) {
+      console.error('[billing/cancel-subscription] db lookup failed:', rowErr.message);
+      return res.status(500).json({ ok: false, reason: 'db_failed' });
+    }
+    if (!row || !row.monthly_grant || row.monthly_grant <= 0) {
+      // L'user n'est pas abonné — front ne devrait pas afficher le
+      // bouton dans ce cas, mais on est défensif.
+      return res.status(400).json({ ok: false, reason: 'no_subscription' });
+    }
+    const subId = row.stripe_subscription_id;
+    if (!subId) {
+      // Cas Sébastien : abo actif côté DB mais sub_id jamais renseigné
+      // par le webhook (bug pré-2026-05-27). Front bascule sur mailto.
+      console.warn(`[billing/cancel-subscription] missing stripe_subscription_id for user ${user.id}`);
+      return res.json({ ok: false, reason: 'missing_sub_id' });
+    }
+
+    const stripe = getStripe();
+
+    // Idempotence : check si déjà en cours d'annulation
+    let sub;
+    try {
+      sub = await stripe.subscriptions.retrieve(subId);
+    } catch (err) {
+      console.error(`[billing/cancel-subscription] stripe retrieve failed (sub ${subId}):`, err.message);
+      return res.status(500).json({ ok: false, reason: 'stripe_failed' });
+    }
+
+    if (sub.cancel_at_period_end === true) {
+      const cancelAt = sub.cancel_at || sub.current_period_end || null;
+      return res.json({ ok: true, alreadyCancelled: true, cancelAt });
+    }
+
+    if (sub.status === 'canceled') {
+      // Déjà résilié pour de bon (rare, mais peut arriver si race avec
+      // un autre canal d'annulation). Renvoyer comme déjà-annulé.
+      return res.json({ ok: true, alreadyCancelled: true, cancelAt: sub.canceled_at || null });
+    }
+
+    // Update : pose le flag. Le webhook customer.subscription.updated
+    // détectera la transition et enverra la notif ops automatiquement.
+    let updated;
+    try {
+      updated = await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
+    } catch (err) {
+      console.error(`[billing/cancel-subscription] stripe update failed (sub ${subId}):`, err.message);
+      return res.status(500).json({ ok: false, reason: 'stripe_failed' });
+    }
+
+    const cancelAt = updated.cancel_at || updated.current_period_end || null;
+    console.log(`[billing/cancel-subscription] user ${user.id} cancelled sub ${subId} (cancelAt=${cancelAt})`);
+    return res.json({ ok: true, cancelAt });
+  } catch (err) {
+    console.error('[billing/cancel-subscription] unexpected error:', err.message, err.stack);
+    return res.status(500).json({ ok: false, error: 'unexpected' });
+  }
+});
+
 // ─── POST /webhook — traite les events Stripe ─────────────────
 //
 // IMPORTANT : ce handler attend du raw body (express.raw) pour
