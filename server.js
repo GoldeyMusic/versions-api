@@ -72,6 +72,14 @@ app.use('/api/account', require('./api/_account'));
 // l'auth se fait via shared secret (cron externe, pas un user authentifié).
 app.use('/api/newsletter', require('./api/_newsletter'));
 
+// ─── Plugin DAW — Phase 2.A ───────────────────────────────────────
+// POST /api/plugin/feedback  → metering + question → réponse Claude
+// GET  /api/plugin/ping      → healthcheck (pas gated)
+// Auth par shared secret X-Plugin-Secret (env PLUGIN_DEV_SECRET) gérée
+// par le router lui-même. Sera remplacé en Phase 2.B par un vrai JWT user
+// (device-code flow + page web versions.studio/plugin-auth).
+app.use('/api/plugin', require('./api/_plugin'));
+
 // ─── Endpoints authentifiés ───────────────────────────────────────
 // Tous ces routers exigent un Bearer JWT Supabase. requireAuth pose
 // req.user.id et req.user.email. Les endpoints DOIVENT utiliser
