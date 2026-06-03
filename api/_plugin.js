@@ -56,10 +56,17 @@ function formatMetering(m) {
 function formatContext(ctx) {
   if (!ctx) return '';
   const parts = [];
-  if (ctx.genre) parts.push(`Genre déclaré : ${ctx.genre}`);
-  if (ctx.intent) parts.push(`Intention : ${ctx.intent}`);
-  if (ctx.instrumentType) parts.push(`Type de canal : ${ctx.instrumentType}`);
-  if (ctx.daw) parts.push(`DAW : ${ctx.daw}`);
+  // Profil utilisateur — adapte le ton et le vocabulaire
+  if (ctx.userName)       parts.push(`Utilisateur : ${ctx.userName}`);
+  if (ctx.userLevel)      parts.push(`Niveau d'expérience : ${ctx.userLevel}`);
+  if (ctx.userMonitors)   parts.push(`Monitors / enceintes : ${ctx.userMonitors}`);
+  if (ctx.userHeadphones) parts.push(`Casques : ${ctx.userHeadphones}`);
+  if (ctx.userGenres)     parts.push(`Genres habituels du producteur : ${ctx.userGenres}`);
+  // Contexte de session
+  if (ctx.daw)            parts.push(`DAW : ${ctx.daw}`);
+  if (ctx.genre)          parts.push(`Genre du projet en cours : ${ctx.genre}`);
+  if (ctx.intent)         parts.push(`Intention : ${ctx.intent}`);
+  if (ctx.instrumentType) parts.push(`Type de canal analysé : ${ctx.instrumentType}`);
 
   let block = parts.length > 0 ? `Contexte :\n${parts.join('\n')}\n\n` : '';
 
