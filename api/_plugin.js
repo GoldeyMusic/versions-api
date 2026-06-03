@@ -60,7 +60,21 @@ function formatContext(ctx) {
   if (ctx.intent) parts.push(`Intention : ${ctx.intent}`);
   if (ctx.instrumentType) parts.push(`Type de canal : ${ctx.instrumentType}`);
   if (ctx.daw) parts.push(`DAW : ${ctx.daw}`);
-  return parts.length > 0 ? `Contexte :\n${parts.join('\n')}\n\n` : '';
+
+  let block = parts.length > 0 ? `Contexte :\n${parts.join('\n')}\n\n` : '';
+
+  // Liste plugins de l'utilisateur — change le ton des recommandations :
+  // privilégie ce qu'il possède déjà au lieu de pousser des plugins payants
+  // qu'il n'a pas. C'est l'angle d'attaque "ton arsenal", très important pour
+  // ne pas passer pour une régie publicitaire.
+  if (Array.isArray(ctx.userPlugins) && ctx.userPlugins.length > 0) {
+    // Tronque pour ne pas exploser le contexte Claude — top 200 plugins
+    // suffit largement pour couvrir l'arsenal d'un mixeur normal.
+    const list = ctx.userPlugins.slice(0, 200).join(', ');
+    block += `Plugins installés sur la machine de l'utilisateur (privilégie ceux-ci dans tes recommandations, propose une alternative gratuite si rien ne convient parmi cette liste) :\n${list}\n\n`;
+  }
+
+  return block;
 }
 
 // ─── POST /api/plugin/feedback ───────────────────────────────────
