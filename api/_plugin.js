@@ -105,6 +105,11 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `L'utilisateur travaille SUR SON MIX en cours dans sa DAW. Tu reçois en live les mesures de metering du plugin :\n` +
       `${meteringText}\n\n` +
       `${contextText}` +
+      ((context && context.chatLang === 'fr')
+        ? `LANGUE : réponds TOUJOURS en français, quelle que soit la langue de la question.\n\n`
+        : (context && context.chatLang === 'en')
+        ? `LANGUAGE: ALWAYS answer in English, whatever language the question is in.\n\n`
+        : `LANGUE : réponds dans la langue de la question.\n\n`) +
       `RÈGLES DE FORMATAGE (strict) :\n` +
       `- Tu réponds dans un mini-chat à l'intérieur du plugin (zone limitée à ~6-8 lignes).\n` +
       `- Sois ULTRA concis : 3 à 5 phrases courtes max.\n` +
