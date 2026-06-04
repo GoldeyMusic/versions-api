@@ -78,7 +78,8 @@ function formatContext(ctx) {
     // Tronque pour ne pas exploser le contexte Claude — top 200 plugins
     // suffit largement pour couvrir l'arsenal d'un mixeur normal.
     const list = ctx.userPlugins.slice(0, 200).join(', ');
-    block += `PLUGINS INSTALLÉS (liste exhaustive scannée sur la machine de l'utilisateur — SEULE source de vérité sur ce qu'il possède) :\n${list}\n\n`;
+    block += `PLUGINS INSTALLÉS (liste exhaustive scannée sur la machine de l'utilisateur — SEULE source de vérité sur ce qu'il possède) :\n${list}\n\n` +
+      `NOTE FIABILITÉ : certains fabricants (notamment UAD/Universal Audio) installent TOUTES leurs déclinaisons même non achetées — leur présence dans la liste ne garantit pas que l'utilisateur les possède. Si tu recommandes un plugin UAD, privilégie d'abord un équivalent non-UAD de la liste ; sinon précise en quelques mots qu'il nécessite une licence UAD active.\n\n`;
   }
 
   return block;
@@ -139,7 +140,16 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       model: modelToUse,
     });
 
-    return res.json({ reply, model: modelToUse });
+    // Filet de sécurité formatage : le prompt interdit le markdown mais Haiku
+    // glisse parfois du **gras** ou des puces. Le TextEditor du plugin affiche
+    // du texte brut → on nettoie systématiquement plutôt que d'espérer.
+    const cleanReply = String(reply)
+      .replace(/\*\*([^*]+)\*\*/g, '$1') // **gras** → texte nu
+      .replace(/\*([^*\n]+)\*/g, '$1')   // *italique* → texte nu
+      .replace(/^#{1,4}\s+/gm, '')       // titres markdown
+      .replace(/^[-•*]\s+/gm, '- ');     // puces exotiques → tiret simple
+
+    return res.json({ reply: cleanReply, model: modelToUse });
   } catch (err) {
     console.error('[plugin/feedback] error:', err && err.message);
     return res.status(500).json({ error: 'internal_error' });
