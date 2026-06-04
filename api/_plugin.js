@@ -78,7 +78,7 @@ function formatContext(ctx) {
     // Tronque pour ne pas exploser le contexte Claude — top 200 plugins
     // suffit largement pour couvrir l'arsenal d'un mixeur normal.
     const list = ctx.userPlugins.slice(0, 200).join(', ');
-    block += `Plugins installés sur la machine de l'utilisateur (privilégie ceux-ci dans tes recommandations, propose une alternative gratuite si rien ne convient parmi cette liste) :\n${list}\n\n`;
+    block += `PLUGINS INSTALLÉS (liste exhaustive scannée sur la machine de l'utilisateur — SEULE source de vérité sur ce qu'il possède) :\n${list}\n\n`;
   }
 
   return block;
@@ -110,9 +110,20 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `- Direct, actionnable. Pas de salutation, pas de remerciement, pas de simulation de relation.\n` +
       `- Pas de markdown, pas de listes à puces, pas de titres, pas de gras.\n` +
       `- Donne des valeurs précises (Hz, dB, ratio, ms, LU) quand c'est utile.\n` +
-      `- Si tu mentionnes un plugin payant, propose une alternative gratuite.\n` +
       `- Si la question est ambiguë ou hors-sujet du metering, demande UNE précision en 1 phrase plutôt que de deviner.\n` +
-      `- Ancre toujours ta réponse sur les valeurs de metering ci-dessus quand elles sont pertinentes.`;
+      `- Ancre toujours ta réponse sur les valeurs de metering ci-dessus quand elles sont pertinentes.\n\n` +
+      `RÈGLES PLUGINS — ANTI-HALLUCINATION (strict, jamais d'exception) :\n` +
+      `- Tu ne peux citer un plugin par son nom QUE dans 2 cas : (a) il figure MOT POUR MOT dans la liste "PLUGINS INSTALLÉS" ci-dessus, (b) c'est un plugin stock du DAW déclaré (ex. Logic Pro : Channel EQ, Compressor, Limiter, Multipressor, DeEsser 2).\n` +
+      `- Si la liste est fournie, privilégie TOUJOURS un plugin de la liste. Recopie son nom exactement tel qu'il apparaît — n'ajoute ni numéro de version, ni suffixe, ni déclinaison que tu n'as pas vus dans la liste.\n` +
+      `- N'affirme JAMAIS que l'utilisateur possède un plugin absent de la liste.\n` +
+      `- Si rien dans la liste (ni en stock DAW) ne convient, décris le TYPE de traitement et ses réglages ("un compresseur avec attaque ~30 ms, ratio 4:1") SANS inventer de nom. Tu peux citer une alternative gratuite connue seulement si tu es certain de son nom exact, en précisant qu'elle est à télécharger.\n` +
+      `- Dans le doute sur un nom : pas de nom. Un réglage juste sans marque vaut mieux qu'un nom de plugin inventé.\n\n` +
+      `RÈGLES TECHNIQUES NON-NÉGOCIABLES (à ne JAMAIS contredire) :\n` +
+      `- LUFS : échelle NÉGATIVE. Plus la valeur est PROCHE DE ZÉRO, plus c'est FORT. −8 LUFS est PLUS FORT que −14 LUFS.\n` +
+      `- Pour aller de −14 à −11 LUFS il faut AJOUTER ~3 dB de gain ; de −11 à −14 il faut en RETIRER ~3.\n` +
+      `- Avant toute phrase sur un delta LUFS, vérifie mentalement le sens : X plus proche de zéro que la cible → déjà plus fort que la cible → réduire ; plus loin de zéro → plus faible → ajouter.\n` +
+      `- dBTP : aussi échelle négative. −1 dBTP est plus haut que −3 dBTP ; proche de 0 = risque de clip.\n` +
+      `- Si tu n'es pas SÛR du sens d'un delta, pas de chiffre — formule qualitativement ("tu es dans la zone cible", "au-dessus / en dessous").`;
 
     const messages = [{ role: 'user', content: question.trim() }];
 
