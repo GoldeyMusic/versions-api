@@ -47,7 +47,9 @@ function formatMetering(m) {
     const f = (v) => (typeof v === 'number' ? v.toFixed(1) : 'n/a');
     parts.push(`RMS L ${f(m.rms.L)}  R ${f(m.rms.R)} dB`);
   }
-  if (typeof m.crest === 'number') {
+  // Crest > 40 dB = artefact (RMS effondré pendant un silence), jamais
+  // musical — on l'omet plutôt que de faire dérailler les conseils.
+  if (typeof m.crest === 'number' && m.crest > 0 && m.crest <= 40) {
     parts.push(`Crest ${m.crest.toFixed(1)} dB`);
   }
   return parts.join('  ·  ');
@@ -93,7 +95,12 @@ function formatContext(ctx) {
       if (!t.playing || !t.lufs) {
         return `- ${name} : à l'arrêt (aucune mesure récente)`;
       }
-      return `- ${name} : LUFS short-term ${f(t.lufs.shortTerm)}, integrated ${f(t.lufs.integrated)}, crest ${f(t.crest)} dB`;
+      // Crest omis s'il est implausible (0 = sanitizé côté plugin pendant
+      // les silences ; > 40 dB = artefact de mesure, jamais musical)
+      const crestTxt = (typeof t.crest === 'number' && t.crest > 0 && t.crest <= 40)
+        ? `, crest ${f(t.crest)} dB`
+        : '';
+      return `- ${name} : LUFS short-term ${f(t.lufs.shortTerm)}, integrated ${f(t.lufs.integrated)}${crestTxt}`;
     });
     block +=
       `CONSOLE (instances Versions sur les AUTRES pistes du même projet, mesures live) :\n` +
