@@ -82,6 +82,24 @@ function formatContext(ctx) {
       `NOTE FIABILITÉ : certains fabricants (notamment UAD/Universal Audio) installent TOUTES leurs déclinaisons même non achetées — leur présence dans la liste ne garantit pas que l'utilisateur les possède. Si tu recommandes un plugin UAD, privilégie d'abord un équivalent non-UAD de la liste ; sinon précise en quelques mots qu'il nécessite une licence UAD active.\n\n`;
   }
 
+  // Console View — les AUTRES instances Versions du même projet (une par
+  // piste/groupe). Permet le conseil INTER-PISTES : équilibres, masquage
+  // probable, dynamique relative. `playing:false` = la piste n'a pas joué
+  // depuis > 3 s → pas de chiffres (périmés), on le dit à Claude.
+  if (Array.isArray(ctx.console) && ctx.console.length > 0) {
+    const f = (v) => (typeof v === 'number' ? v.toFixed(1) : 'n/a');
+    const lines = ctx.console.slice(0, 32).map((t) => {
+      const name = t.channelType || 'Unknown';
+      if (!t.playing || !t.lufs) {
+        return `- ${name} : à l'arrêt (aucune mesure récente)`;
+      }
+      return `- ${name} : LUFS short-term ${f(t.lufs.shortTerm)}, integrated ${f(t.lufs.integrated)}, crest ${f(t.crest)} dB`;
+    });
+    block +=
+      `CONSOLE (instances Versions sur les AUTRES pistes du même projet, mesures live) :\n` +
+      `${lines.join('\n')}\n\n`;
+  }
+
   return block;
 }
 
@@ -118,6 +136,13 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `- Donne des valeurs précises (Hz, dB, ratio, ms, LU) quand c'est utile.\n` +
       `- Si la question est ambiguë ou hors-sujet du metering, demande UNE précision en 1 phrase plutôt que de deviner.\n` +
       `- Ancre toujours ta réponse sur les valeurs de metering ci-dessus quand elles sont pertinentes.\n\n` +
+      `RÈGLES CONSOLE — CONSEIL INTER-PISTES (si un bloc CONSOLE est fourni) :\n` +
+      `- Le bloc CONSOLE liste les autres pistes du projet équipées d'une instance Versions, avec leurs mesures live. La piste analysée (celle du chat) est "${(context && context.instrumentType) || 'inconnue'}".\n` +
+      `- Tu peux et DOIS t'en servir pour raisonner inter-pistes quand c'est pertinent : équilibres de niveaux entre pistes (deltas LUFS short-term), dynamique relative (crest), risques de masquage PROBABLES entre registres voisins (ex. basse vs batterie dans le bas du spectre).\n` +
+      `- Les deltas LUFS entre pistes suivent les mêmes règles de polarité que ci-dessous : vérifie le sens avant d'écrire un chiffre.\n` +
+      `- Masquage : tu n'as PAS les spectres des autres pistes, seulement leurs niveaux. Parle de masquage au conditionnel ("risque de", "vérifie si") et propose un test concret, jamais une affirmation.\n` +
+      `- Une piste "à l'arrêt" n'a aucune mesure récente : ne cite JAMAIS de chiffre pour elle, et si la comparaison la concerne, dis à l'utilisateur de lancer la lecture pour comparer.\n` +
+      `- Si la question ne concerne que la piste courante, n'étale pas la console : un conseil inter-pistes seulement s'il apporte quelque chose.\n\n` +
       `RÈGLES PLUGINS — ANTI-HALLUCINATION (strict, jamais d'exception) :\n` +
       `- Tu ne peux citer un plugin par son nom QUE dans 2 cas : (a) il figure MOT POUR MOT dans la liste "PLUGINS INSTALLÉS" ci-dessus, (b) c'est un plugin stock du DAW déclaré (ex. Logic Pro : Channel EQ, Compressor, Limiter, Multipressor, DeEsser 2).\n` +
       `- Si la liste est fournie, privilégie TOUJOURS un plugin de la liste. Recopie son nom exactement tel qu'il apparaît — n'ajoute ni numéro de version, ni suffixe, ni déclinaison que tu n'as pas vus dans la liste.\n` +
