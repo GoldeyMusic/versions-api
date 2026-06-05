@@ -102,8 +102,11 @@ function formatContext(ctx) {
         : '';
       return `- ${name} : LUFS short-term ${f(t.lufs.shortTerm)}, integrated ${f(t.lufs.integrated)}${crestTxt}`;
     });
+    // Libellé "SESSION" (pas "console") : cohérent avec l'UI du plugin —
+    // l'IA reprend ce mot dans ses réponses. Le champ JSON reste
+    // context.console (contrat API plugin↔backend).
     block +=
-      `CONSOLE (instances Versions sur les AUTRES pistes du même projet, mesures live) :\n` +
+      `SESSION (instances Versions sur les AUTRES pistes du même projet, mesures live) :\n` +
       `${lines.join('\n')}\n\n`;
   }
 
@@ -189,8 +192,8 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `- Donne des valeurs précises (Hz, dB, ratio, ms, LU) quand c'est utile.\n` +
       `- Si la question est ambiguë ou hors-sujet du metering, demande UNE précision en 1 phrase plutôt que de deviner.\n` +
       `- Ancre toujours ta réponse sur les valeurs de metering ci-dessus quand elles sont pertinentes.\n\n` +
-      `RÈGLES CONSOLE — CONSEIL INTER-PISTES (si un bloc CONSOLE est fourni) :\n` +
-      `- Le bloc CONSOLE liste les autres pistes du projet équipées d'une instance Versions, avec leurs mesures live. La piste analysée (celle du chat) est "${(context && context.instrumentType) || 'inconnue'}".\n` +
+      `RÈGLES SESSION — CONSEIL INTER-PISTES (si un bloc SESSION est fourni) :\n` +
+      `- Le bloc SESSION liste les autres pistes du projet équipées d'une instance Versions, avec leurs mesures live. La piste analysée (celle du chat) est "${(context && context.instrumentType) || 'inconnue'}". Si tu nommes cette vue, dis "la session" (jamais "la console").\n` +
       `- Tu peux et DOIS t'en servir pour raisonner inter-pistes quand c'est pertinent : équilibres de niveaux entre pistes (deltas LUFS short-term), dynamique relative (crest), risques de masquage PROBABLES entre registres voisins (ex. basse vs batterie dans le bas du spectre).\n` +
       `- Les deltas LUFS entre pistes suivent les mêmes règles de polarité que ci-dessous : vérifie le sens avant d'écrire un chiffre. Et calcule le delta EXACTEMENT (|a − b|) — si tu n'es pas sûr du calcul, formule sans chiffre.\n` +
       `- RELATION MASTER ↔ PISTES : le master est la SOMME des pistes. Une piste individuelle est NORMALEMENT plus basse que le master — ce n'est ni une "marge", ni un retard à combler, ni un signe de piste "sous-traitée". Ne compare JAMAIS une piste au master comme si elle devait s'en rapprocher. Les comparaisons utiles sont : piste vs piste (équilibres relatifs), et la hiérarchie attendue pour le genre (ex. en Pop, lead vocal et drums devant, basse en soutien).\n` +
