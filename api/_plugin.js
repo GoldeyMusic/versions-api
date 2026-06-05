@@ -194,7 +194,8 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `- Tu peux et DOIS t'en servir pour raisonner inter-pistes quand c'est pertinent : équilibres de niveaux entre pistes (deltas LUFS short-term), dynamique relative (crest), risques de masquage PROBABLES entre registres voisins (ex. basse vs batterie dans le bas du spectre).\n` +
       `- Les deltas LUFS entre pistes suivent les mêmes règles de polarité que ci-dessous : vérifie le sens avant d'écrire un chiffre. Et calcule le delta EXACTEMENT (|a − b|) — si tu n'es pas sûr du calcul, formule sans chiffre.\n` +
       `- RELATION MASTER ↔ PISTES : le master est la SOMME des pistes. Une piste individuelle est NORMALEMENT plus basse que le master — ce n'est ni une "marge", ni un retard à combler, ni un signe de piste "sous-traitée". Ne compare JAMAIS une piste au master comme si elle devait s'en rapprocher. Les comparaisons utiles sont : piste vs piste (équilibres relatifs), et la hiérarchie attendue pour le genre (ex. en Pop, lead vocal et drums devant, basse en soutien).\n` +
-      `- MASQUAGE : si un bloc SPECTRES est fourni, appuie-toi DESSUS, pas sur des suppositions. Chevauchement réel = deux pistes énergiques dans la ou les MÊMES bandes avec des niveaux de bande proches (delta < ~6 dB), surtout sous 300 Hz (kick/basse) et dans les bas-médiums 200-500 Hz. Dans ce cas tu peux l'AFFIRMER en citant la zone en Hz, et tu proposes une action chiffrée : EQ (-2/-3 dB sur la bande la moins essentielle à la piste), filtre coupe-bas, ou sidechain. Ne récite JAMAIS les valeurs des spectres — sers-t'en pour conclure.\n` +
+      `- SPECTRES — POLARITÉ (même règle que les LUFS) : les valeurs sont des dB NÉGATIFS. -12 dB est PLUS FORT que -47 dB. Avant d'écrire qu'une piste "domine" ou "s'efface" dans une zone, vérifie bande par bande : la plus forte est celle dont la valeur est la plus PROCHE DE ZÉRO.\n` +
+      `- MASQUAGE (si un bloc SPECTRES est fourni, appuie-toi DESSUS, pas sur des suppositions) : une piste A masque une piste B dans une zone quand l'énergie de A y est COMPARABLE (±6 dB) OU SUPÉRIEURE à celle de B, alors que cette zone est importante pour B (ex. 50-120 Hz pour le kick, 80-250 Hz pour la basse, 1-4 kHz pour la voix). Deux cas à AFFIRMER en citant la zone en Hz : (a) niveaux proches dans les mêmes bandes = les deux pistes se brouillent mutuellement ; (b) A largement au-dessus de B (10 dB ou plus) dans une zone vitale de B = B est NOYÉE — c'est le masquage le plus grave, pas une "bonne séparation". Propose alors une action chiffrée : baisser A, EQ (-2/-3 dB sur la zone), filtre coupe-bas, ou sidechain. Ne récite JAMAIS les listes de valeurs des spectres — sers-t'en pour conclure.\n` +
       `- Sans bloc SPECTRES, tu n'as que les niveaux : masquage au conditionnel uniquement ("risque de", "vérifie si") avec un test concret.\n` +
       `- Une piste "à l'arrêt" n'a aucune mesure récente : ne cite JAMAIS de chiffre pour elle, et si la comparaison la concerne, dis à l'utilisateur de lancer la lecture pour comparer.\n` +
       `- Si la question ne concerne que la piste courante, n'étale pas la console : un conseil inter-pistes seulement s'il apporte quelque chose.\n\n` +
@@ -216,7 +217,16 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
     // Default Haiku — économique, suffisant pour Q&A courtes sur du metering.
     // L'app peut demander Sonnet via { "model": "sonnet" } si besoin (réponse
     // plus nuancée mais 5× plus chère).
+    // EXCEPTION Console View : dès que des spectres inter-pistes sont
+    // fournis, le raisonnement comparatif (24 bandes × N pistes, polarité
+    // dB, qui masque qui) dépasse Haiku — observé en test 2026-06-05 :
+    // basse 40 dB au-dessus du kick conclue "bonne séparation". Sonnet
+    // automatique dans ce cas, sauf demande explicite { "model": "haiku" }.
     const modelToUse = model === 'sonnet'
+      ? 'claude-sonnet-4-6'
+      : model === 'haiku'
+      ? 'claude-haiku-4-5-20251001'
+      : spectraText
       ? 'claude-sonnet-4-6'
       : 'claude-haiku-4-5-20251001';
 
