@@ -110,6 +110,42 @@ function formatContext(ctx) {
   return block;
 }
 
+// ─── Spectres réduits (Console View étape 2) ─────────────────────
+// 24 bandes log 30 Hz → 16 kHz — bornes f_b = 30 × (16000/30)^(b/24).
+// MÊME réduction côté plugin (InstanceHub::kNumBands + rebuildBandMapping
+// dans PluginProcessor.cpp) — garder les deux synchro.
+const BAND_LABELS = [
+  '30-39', '39-51', '51-66', '66-85', '85-111', '111-144', '144-187',
+  '187-243', '243-316', '316-411', '411-533', '533-693', '693-900',
+  '900-1.2k', '1.2k-1.5k', '1.5k-2k', '2k-2.6k', '2.6k-3.3k', '3.3k-4.3k',
+  '4.3k-5.6k', '5.6k-7.3k', '7.3k-9.5k', '9.5k-12.3k', '12.3k-16k',
+];
+
+function formatSpectra(metering, ctx) {
+  const fmtBands = (arr) =>
+    arr.slice(0, BAND_LABELS.length).map((v) => Math.round(v)).join(' ');
+  const lines = [];
+
+  if (metering && Array.isArray(metering.spectrum) && metering.spectrum.length > 0) {
+    const name = (ctx && ctx.instrumentType) || 'piste courante';
+    lines.push(`- ${name} (PISTE COURANTE) : ${fmtBands(metering.spectrum)}`);
+  }
+  if (ctx && Array.isArray(ctx.console)) {
+    for (const t of ctx.console.slice(0, 32)) {
+      if (t.playing && Array.isArray(t.spectrum) && t.spectrum.length > 0) {
+        lines.push(`- ${t.channelType || 'Unknown'} : ${fmtBands(t.spectrum)}`);
+      }
+    }
+  }
+  if (lines.length === 0) return '';
+
+  return (
+    `SPECTRES (signature tonale moyenne ~1 s, dB par bande, échelle dBFS commune à toutes les pistes — directement comparables) :\n` +
+    `Bandes (Hz) : ${BAND_LABELS.join(' | ')}\n` +
+    `${lines.join('\n')}\n\n`
+  );
+}
+
 // ─── POST /api/plugin/feedback ───────────────────────────────────
 router.post('/feedback', requirePluginAuth, async (req, res) => {
   try {
@@ -132,12 +168,14 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
 
     const meteringText = formatMetering(metering);
     const contextText = formatContext(context);
+    const spectraText = formatSpectra(metering, context);
 
     const systemPrompt =
       `Tu es l'assistant Versions, ingénieur du son expert (20+ ans), intégré dans un plugin DAW.\n\n` +
       `L'utilisateur travaille SUR SON MIX en cours dans sa DAW. Tu reçois en live les mesures de metering du plugin :\n` +
       `${meteringText}\n\n` +
       `${contextText}` +
+      `${spectraText}` +
       ((context && context.chatLang === 'fr')
         ? `LANGUE : réponds TOUJOURS en français, quelle que soit la langue de la question.\n\n`
         : (context && context.chatLang === 'en')
@@ -156,7 +194,8 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `- Tu peux et DOIS t'en servir pour raisonner inter-pistes quand c'est pertinent : équilibres de niveaux entre pistes (deltas LUFS short-term), dynamique relative (crest), risques de masquage PROBABLES entre registres voisins (ex. basse vs batterie dans le bas du spectre).\n` +
       `- Les deltas LUFS entre pistes suivent les mêmes règles de polarité que ci-dessous : vérifie le sens avant d'écrire un chiffre. Et calcule le delta EXACTEMENT (|a − b|) — si tu n'es pas sûr du calcul, formule sans chiffre.\n` +
       `- RELATION MASTER ↔ PISTES : le master est la SOMME des pistes. Une piste individuelle est NORMALEMENT plus basse que le master — ce n'est ni une "marge", ni un retard à combler, ni un signe de piste "sous-traitée". Ne compare JAMAIS une piste au master comme si elle devait s'en rapprocher. Les comparaisons utiles sont : piste vs piste (équilibres relatifs), et la hiérarchie attendue pour le genre (ex. en Pop, lead vocal et drums devant, basse en soutien).\n` +
-      `- Masquage : tu n'as PAS les spectres des autres pistes, seulement leurs niveaux. Parle de masquage au conditionnel ("risque de", "vérifie si") et propose un test concret, jamais une affirmation.\n` +
+      `- MASQUAGE : si un bloc SPECTRES est fourni, appuie-toi DESSUS, pas sur des suppositions. Chevauchement réel = deux pistes énergiques dans la ou les MÊMES bandes avec des niveaux de bande proches (delta < ~6 dB), surtout sous 300 Hz (kick/basse) et dans les bas-médiums 200-500 Hz. Dans ce cas tu peux l'AFFIRMER en citant la zone en Hz, et tu proposes une action chiffrée : EQ (-2/-3 dB sur la bande la moins essentielle à la piste), filtre coupe-bas, ou sidechain. Ne récite JAMAIS les valeurs des spectres — sers-t'en pour conclure.\n` +
+      `- Sans bloc SPECTRES, tu n'as que les niveaux : masquage au conditionnel uniquement ("risque de", "vérifie si") avec un test concret.\n` +
       `- Une piste "à l'arrêt" n'a aucune mesure récente : ne cite JAMAIS de chiffre pour elle, et si la comparaison la concerne, dis à l'utilisateur de lancer la lecture pour comparer.\n` +
       `- Si la question ne concerne que la piste courante, n'étale pas la console : un conseil inter-pistes seulement s'il apporte quelque chose.\n\n` +
       `RÈGLES PLUGINS — ANTI-HALLUCINATION (strict, jamais d'exception) :\n` +
