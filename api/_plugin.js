@@ -140,7 +140,7 @@ function formatSpectra(metering, ctx) {
   if (lines.length === 0) return '';
 
   return (
-    `SPECTRES (signature tonale moyenne ~1 s, dB par bande, échelle dBFS commune à toutes les pistes — directement comparables) :\n` +
+    `SPECTRES (signature tonale de chaque piste QUAND ELLE SONNE — les silences ne diluent pas la mesure ; dB par bande, échelle dBFS commune, directement comparables) :\n` +
     `Bandes (Hz) : ${BAND_LABELS.join(' | ')}\n` +
     `${lines.join('\n')}\n\n`
   );
@@ -196,6 +196,7 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `- RELATION MASTER ↔ PISTES : le master est la SOMME des pistes. Une piste individuelle est NORMALEMENT plus basse que le master — ce n'est ni une "marge", ni un retard à combler, ni un signe de piste "sous-traitée". Ne compare JAMAIS une piste au master comme si elle devait s'en rapprocher. Les comparaisons utiles sont : piste vs piste (équilibres relatifs), et la hiérarchie attendue pour le genre (ex. en Pop, lead vocal et drums devant, basse en soutien).\n` +
       `- SPECTRES — POLARITÉ (même règle que les LUFS) : les valeurs sont des dB NÉGATIFS. -12 dB est PLUS FORT que -47 dB. Avant d'écrire qu'une piste "domine" ou "s'efface" dans une zone, vérifie bande par bande : la plus forte est celle dont la valeur est la plus PROCHE DE ZÉRO.\n` +
       `- MASQUAGE (si un bloc SPECTRES est fourni, appuie-toi DESSUS, pas sur des suppositions) : une piste A masque une piste B dans une zone quand l'énergie de A y est COMPARABLE (±6 dB) OU SUPÉRIEURE à celle de B, alors que cette zone est importante pour B (ex. 50-120 Hz pour le kick, 80-250 Hz pour la basse, 1-4 kHz pour la voix). Deux cas à AFFIRMER en citant la zone en Hz : (a) niveaux proches dans les mêmes bandes = les deux pistes se brouillent mutuellement ; (b) A largement au-dessus de B (10 dB ou plus) dans une zone vitale de B = B est NOYÉE — c'est le masquage le plus grave, pas une "bonne séparation". Propose alors une action chiffrée : baisser A, EQ (-2/-3 dB sur la zone), filtre coupe-bas, ou sidechain. Ne récite JAMAIS les listes de valeurs des spectres — sers-t'en pour conclure.\n` +
+      `- MASQUAGE TEMPOREL : les spectres disent OÙ les pistes ont de l'énergie, pas QUAND. Deux pistes qui se chevauchent spectralement mais jouent en alternance (sidechain, arrangement) ne se masquent pas vraiment. Si l'utilisateur indique qu'un sidechain ou l'arrangement sépare déjà deux pistes dans le temps, le chevauchement mesuré SURESTIME le masquage réel — dis-le et concentre-toi sur ce qui se passe quand elles jouent ensemble.\n` +
       `- Sans bloc SPECTRES, tu n'as que les niveaux : masquage au conditionnel uniquement ("risque de", "vérifie si") avec un test concret.\n` +
       `- Une piste "à l'arrêt" n'a aucune mesure récente : ne cite JAMAIS de chiffre pour elle, et si la comparaison la concerne, dis à l'utilisateur de lancer la lecture pour comparer.\n` +
       `- Si la question ne concerne que la piste courante, n'étale pas la console : un conseil inter-pistes seulement s'il apporte quelque chose.\n\n` +
