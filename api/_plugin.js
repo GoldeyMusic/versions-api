@@ -115,6 +115,14 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       return res.status(400).json({ error: 'question_too_long' });
     }
 
+    // Diagnostic Console View : visible dans les logs Railway. Permet de
+    // vérifier en 10 s si le plugin envoie bien context.console (sinon =
+    // vieux binaire en mémoire dans Logic).
+    const consoleInfo = Array.isArray(context && context.console)
+      ? `${context.console.length} pistes (${context.console.filter((t) => t.playing).length} en lecture)`
+      : 'ABSENT';
+    console.log(`[plugin/feedback] console: ${consoleInfo} · canal: ${(context && context.instrumentType) || '?'}`);
+
     const meteringText = formatMetering(metering);
     const contextText = formatContext(context);
 
