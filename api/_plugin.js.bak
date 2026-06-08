@@ -55,21 +55,6 @@ function formatMetering(m) {
   return parts.join('  ·  ');
 }
 
-function formatMaskAlerts(maskAlerts) {
-  if (!Array.isArray(maskAlerts) || maskAlerts.length === 0) return '';
-  const lines = maskAlerts.slice(0, 16).map((m) => {
-    const lo = Math.round(m.loHz), hi = Math.round(m.hiHz);
-    if (m.severe)
-      return `- ROUGE (domination) : "${m.a}" masque "${m.b}" sur ${lo}-${hi} Hz`;
-    return `- ORANGE (competition legere) : "${m.a}" et "${m.b}" se chevauchent sur ${lo}-${hi} Hz`;
-  });
-  return (
-    `ALERTES DE MASQUAGE AFFICHEES A L'ECRAN (panneau SESSION, zones colorees du spectre) :\n` +
-    `${lines.join('\n')}\n` +
-    `Ce sont EXACTEMENT les zones que l'utilisateur voit colorees dans le spectre. ROUGE = domination (une piste couvre l'autre), ORANGE = competition legere. Si on te demande "c'est quoi la zone orange" ou "la zone rouge", reponds avec CETTE liste (pistes concernees + plage en Hz + severite). Ne dis JAMAIS que tu ne peux pas voir les graphiques : ces alertes SONT le contenu de ces zones colorees.\n\n`
-  );
-}
-
 function formatContext(ctx) {
   if (!ctx) return '';
   const parts = [];
@@ -124,9 +109,6 @@ function formatContext(ctx) {
       `SESSION (instances Versions sur les AUTRES pistes du même projet, mesures live) :\n` +
       `${lines.join('\n')}\n\n`;
   }
-
-  const maskBlock = formatMaskAlerts(ctx.maskAlerts);
-  if (maskBlock) block += maskBlock;
 
   return block;
 }
