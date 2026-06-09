@@ -286,31 +286,4 @@ router.get('/ping', (req, res) => {
   res.json({ ok: true, service: 'versions-plugin', phase: '2.A' });
 });
 
-const multerExpress = require('multer');
-const { analyzeListening: analyzeListeningExpress } = require('../lib/gemini');
-const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
-
-router.post('/express', requirePluginAuth, expressUpload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'file_required' });
-    const { title, vocalType } = req.body;
-    const listening = await analyzeListeningExpress(
-      req.file.buffer, req.file.mimetype || 'audio/wav',
-      title || 'ce morceau', '', undefined, vocalType || 'vocal', 'fr'
-    );
-    const parts = [];
-    if (listening && listening.impression) parts.push(String(listening.impression));
-    if (listening && Array.isArray(listening.a_travailler) && listening.a_travailler.length) {
-      parts.push('A travailler : ' + listening.a_travailler.join(' ; '));
-    } else if (listening && Array.isArray(listening.points_forts) && listening.points_forts.length) {
-      parts.push('Points forts : ' + listening.points_forts.slice(0, 3).join(' ; '));
-    }
-    const reply = parts.join('\n\n') || 'Ecoute effectuee.';
-    return res.json({ success: true, reply });
-  } catch (err) {
-    console.error('[plugin/express] error:', err && err.message);
-    return res.status(500).json({ error: 'internal_error' });
-  }
-});
-
 module.exports = router;
