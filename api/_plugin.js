@@ -290,29 +290,42 @@ const multerExpress = require('multer');
 const { analyzeListening: analyzeListeningExpress } = require('../lib/gemini');
 const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
+// Helper RPC quota (consume / refund) avec le JWT user. Renvoie null si pas
+// de token ou si la RPC échoue (mode dégradé : on ne bloque pas l'écoute).
+async function callExpressQuotaRpc(fn, userToken) {
+  if (!userToken) return null;
+  try {
+    const fetchQuota = require('node-fetch');
+    const r = await fetchQuota(process.env.SUPABASE_URL + '/rest/v1/rpc/' + fn, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: 'sb_publishable_4n0FfejTu9-3kWXjALYNow_6gAZ814r',
+        Authorization: 'Bearer ' + userToken,
+      },
+      body: '{}',
+    });
+    return await r.json().catch(() => null);
+  } catch (e) {
+    console.warn(`[plugin/express] rpc ${fn} failed:`, e.message);
+    return null;
+  }
+}
+
 router.post('/express', requirePluginAuth, expressUpload.single('file'), async (req, res) => {
+  const userTokenExpress = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  let quotaConsumed = false;
   try {
     if (!req.file) return res.status(400).json({ error: 'file_required' });
-        // Garde-fou cout : quota mensuel par utilisateur (RPC plugin_express_consume).
-    const userTokenExpress = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    if (userTokenExpress) {
-      try {
-        const fetchQuota = require('node-fetch');
-        const qr = await fetchQuota(process.env.SUPABASE_URL + '/rest/v1/rpc/plugin_express_consume', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: 'sb_publishable_4n0FfejTu9-3kWXjALYNow_6gAZ814r',
-            Authorization: 'Bearer ' + userTokenExpress,
-          },
-          body: '{}',
-        });
-        const quota = await qr.json().catch(() => null);
-        if (quota && quota.allowed === false) {
-          return res.status(429).json({ error: 'express_quota', used: quota.used, limit: quota.limit });
-        }
-      } catch (e) { console.warn('[plugin/express] quota check failed:', e.message); }
+
+    // Garde-fou coût : consomme 1 écoute AVANT l'analyse (anti-spam). Si la
+    // RPC dit "non" → 429. Si pas de token / RPC indispo → mode dégradé
+    // (pas de blocage). Le refund (catch) annule la conso en cas d'échec.
+    const quota = await callExpressQuotaRpc('plugin_express_consume', userTokenExpress);
+    if (quota && quota.allowed === false) {
+      return res.status(429).json({ error: 'express_quota', used: quota.used, limit: quota.limit });
     }
+    if (quota && quota.allowed === true) quotaConsumed = true;
 
     const { title, vocalType } = req.body;
     const listening = await analyzeListeningExpress(
@@ -330,6 +343,8 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
     return res.json({ success: true, reply });
   } catch (err) {
     console.error('[plugin/express] error:', err && err.message);
+    // Écoute échouée → rembourse l'écoute consommée (jamais débiter sur échec)
+    if (quotaConsumed) await callExpressQuotaRpc('plugin_express_refund', userTokenExpress);
     return res.status(500).json({ error: 'internal_error' });
   }
 });

@@ -226,6 +226,25 @@ Optionnelles :
 patch IPv6 rateLimit, garde-fou LUFS aberrant, refonte
 question "masterisé ?").
 
+## Écoute express plugin (`/api/plugin/express`)
+
+Phase 3 niveau 2 du plugin DAW. Reçoit un extrait WAV ~30-60 s en multipart
+(`ExpressClient` côté plugin), lance une écoute Gemini courte
+(`lib/gemini.js::analyzeListening` sur buffer inline, < 20 Mo) et renvoie un
+verdict texte dans le chat du plugin.
+
+Garde-fou coût (migration `versions-app/supabase/migrations/033_plugin_express_quota.sql`,
+**à appliquer sur Supabase**) :
+- Table `plugin_express_usage` (user_id + mois 'YYYY-MM' + compteur).
+- RPC `plugin_express_consume()` (SECURITY DEFINER, lit `auth.uid()`,
+  check + incrément atomique avec `for update`, 15 écoutes/mois) appelée
+  AVANT l'écoute — 429 `express_quota` si dépassé.
+- RPC `plugin_express_refund()` appelée dans le catch si l'écoute Gemini
+  échoue (politique "jamais débiter sur échec", cf. crédits 4 paliers).
+- Appel via le JWT user (`Authorization: Bearer`) → quota effectif
+  seulement quand le plugin envoie un token (Phase 2.B auth). Sans token =
+  mode dégradé (helper `callExpressQuotaRpc` renvoie null, pas de blocage).
+
 ## Points en suspens
 
 - **Configurer cron mensuel newsletter** sur cron-job.org (ou Railway
