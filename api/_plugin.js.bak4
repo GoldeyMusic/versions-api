@@ -293,27 +293,6 @@ const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), li
 router.post('/express', requirePluginAuth, expressUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'file_required' });
-        // Garde-fou cout : quota mensuel par utilisateur (RPC plugin_express_consume).
-    const userTokenExpress = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    if (userTokenExpress) {
-      try {
-        const fetchQuota = require('node-fetch');
-        const qr = await fetchQuota(process.env.SUPABASE_URL + '/rest/v1/rpc/plugin_express_consume', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: 'sb_publishable_4n0FfejTu9-3kWXjALYNow_6gAZ814r',
-            Authorization: 'Bearer ' + userTokenExpress,
-          },
-          body: '{}',
-        });
-        const quota = await qr.json().catch(() => null);
-        if (quota && quota.allowed === false) {
-          return res.status(429).json({ error: 'express_quota', used: quota.used, limit: quota.limit });
-        }
-      } catch (e) { console.warn('[plugin/express] quota check failed:', e.message); }
-    }
-
     const { title, vocalType } = req.body;
     const listening = await analyzeListeningExpress(
       req.file.buffer, req.file.mimetype || 'audio/wav',
