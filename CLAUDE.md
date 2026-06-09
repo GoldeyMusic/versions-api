@@ -234,7 +234,7 @@ Phase 3 niveau 2 du plugin DAW. Reçoit un extrait WAV ~30-60 s en multipart
 verdict texte dans le chat du plugin.
 
 Garde-fou coût (migration `versions-app/supabase/migrations/033_plugin_express_quota.sql`,
-**à appliquer sur Supabase**) :
+**APPLIQUÉE sur Supabase le 2026-06-05**) :
 - Table `plugin_express_usage` (user_id + mois 'YYYY-MM' + compteur).
 - RPC `plugin_express_consume()` (SECURITY DEFINER, lit `auth.uid()`,
   check + incrément atomique avec `for update`, 15 écoutes/mois) appelée
