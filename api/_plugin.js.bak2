@@ -128,14 +128,6 @@ function formatContext(ctx) {
   const maskBlock = formatMaskAlerts(ctx.maskAlerts);
   if (maskBlock) block += maskBlock;
 
-  // Fiche d'analyse versions.studio du titre lie (envoyee par le plugin)
-  if (ctx.ficheSummary) {
-    block +=
-      `FICHE D'ANALYSE VERSIONS.STUDIO (analyse complete du titre lie, ecoute reelle + DSP) :\n` +
-      `${ctx.ficheSummary}\n` +
-      `Sers-t'en comme reference de fond sur CE morceau. ATTENTION : le metering ci-dessus est l'etat ACTUEL dans le DAW et peut differer de la version analysee — si ca diverge, dis-le.\n\n`;
-  }
-
   return block;
 }
 
