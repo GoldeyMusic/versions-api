@@ -179,6 +179,36 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
     }
   }
 
+  // ── Raccord plugin DAW (Phase 3 niv. 3) : trackId fourni → résolution
+  // serveur du contexte (titre, projet, vocal_type, intention, version
+  // précédente). Le plugin n'envoie que { storagePath, trackId, version?,
+  // durationSeconds } : on ne fait JAMAIS confiance au client pour le
+  // titre/projet (une faute de frappe créerait un doublon de track).
+  // SÉCURITÉ : le track doit appartenir au user du JWT — validé ICI,
+  // AVANT la création du job et le débit du crédit (404 propre, pas de
+  // cycle débit/refund pour un trackId pourri).
+  let pluginTrack = null;
+  {
+    const trackIdRaw = req.body.trackId;
+    const isUuid = typeof trackIdRaw === 'string'
+      && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(trackIdRaw);
+    if (trackIdRaw && !isUuid) {
+      return res.status(400).json({ error: 'track_id_invalid' });
+    }
+    if (isUuid) {
+      const { data: trk, error: trkErr } = await supabaseStorage
+        .from('tracks')
+        .select('id, title, project_id, vocal_type, artistic_intent')
+        .eq('id', trackIdRaw)
+        .eq('user_id', userIdEarly || '00000000-0000-0000-0000-000000000000')
+        .maybeSingle();
+      if (trkErr || !trk) {
+        return res.status(404).json({ error: 'track_not_found' });
+      }
+      pluginTrack = trk;
+    }
+  }
+
   const jobId = makeJobId();
   jobs.set(jobId, { status: 'pending', progress: 'Démarrage…', pct: 0, userId: userIdEarly, creditDebited: false });
   res.json({ jobId });
@@ -223,12 +253,15 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
   (async () => {
     try {
       const mode = req.body.mode, daw = req.body.daw;
-      const title = req.body.title || (req.file ? req.file.originalname.replace(/\.[^/.]+$/, '') : '');
-      const version = req.body.version || '';
+      // title/version/skipIntent/inlineIntent/projectId/vocalType : `let`
+      // (et non const) parce que le bloc pluginTrack ci-dessous les
+      // remplace par les valeurs résolues serveur quand trackId est fourni.
+      let title = req.body.title || (req.file ? req.file.originalname.replace(/\.[^/.]+$/, '') : '');
+      let version = req.body.version || '';
       const artist = req.body.artist || '';
       // userId DÉRIVÉ DU JWT — cf. note ci-dessus.
       const userId = req.user?.id || null;
-      const skipIntent = req.body.skipIntent === 'true' || req.body.skipIntent === true;
+      let skipIntent = req.body.skipIntent === 'true' || req.body.skipIntent === true;
       const durationSeconds = parseFloat(req.body.durationSeconds) || null;
       let previousFiche = null;
       try { previousFiche = req.body.previousFiche ? JSON.parse(req.body.previousFiche) : null; } catch {}
@@ -256,7 +289,7 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
         ? req.body.locale.trim()
         : 'fr';
       // Intention inline (fournie avant analyse, ex: heritee du titre pour une V2+)
-      const inlineIntent = typeof req.body.intent === 'string' && req.body.intent.trim().length > 0
+      let inlineIntent = typeof req.body.intent === 'string' && req.body.intent.trim().length > 0
         ? req.body.intent.trim()
         : null;
       // Genre musical : declare par l artiste a l upload (texte libre court)
@@ -289,7 +322,7 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
       // le projet par défaut de l'utilisateur (premier projet, ou crée
       // "Mon premier projet"). Validation : format uuid v4.
       const projectIdRaw = req.body.projectId;
-      const projectId = (typeof projectIdRaw === 'string'
+      let projectId = (typeof projectIdRaw === 'string'
         && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(projectIdRaw))
         ? projectIdRaw
         : null;
@@ -301,9 +334,68 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
         : null;
       // vocalType : passé par AddModal pour les nouveaux titres. Validation
       // côté helper, ici on relaie tel quel.
-      const vocalType = (typeof req.body.vocalType === 'string' && req.body.vocalType.trim().length > 0)
+      let vocalType = (typeof req.body.vocalType === 'string' && req.body.vocalType.trim().length > 0)
         ? req.body.vocalType.trim()
         : null;
+
+      // ── Application du contexte track résolu (plugin DAW, cf. garde
+      // pluginTrack en tête de route). Le serveur fait foi : titre/projet
+      // du track lié, intention artistique du titre, version précédente
+      // pour le bandeau évolution + verrou conseils, nom de version auto.
+      if (pluginTrack) {
+        title = pluginTrack.title;
+        projectId = pluginTrack.project_id;
+        if (!vocalType) vocalType = pluginTrack.vocal_type || null;
+        if (!inlineIntent && pluginTrack.artistic_intent) {
+          inlineIntent = pluginTrack.artistic_intent;
+        }
+        // Le plugin n'a pas d'étape intention interactive : jamais
+        // d'awaiting_intent sur ce chemin (sinon le job resterait gelé).
+        skipIntent = true;
+
+        try {
+          const { data: prevRows } = await supabaseStorage
+            .from('versions')
+            .select('id, name, analysis_result, created_at')
+            .eq('track_id', pluginTrack.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+          const prev = prevRows?.[0] || null;
+          const prevAR = prev?.analysis_result || null;
+          if (!previousFiche && prevAR?.fiche) previousFiche = prevAR.fiche;
+          if (!previousAnalysisResult && prevAR?.fiche && prevAR?.listening) {
+            previousAnalysisResult = {
+              fiche: prevAR.fiche,
+              listening: prevAR.listening,
+              intent_used: prevAR.intent_used || null,
+            };
+          }
+          // Items cochés "implémentés" sur la version précédente →
+          // verrou des sub-scores (même logique que le front, ticket 4.2).
+          if (!previousCompletions && prev?.id) {
+            const { data: comps } = await supabaseStorage
+              .from('mix_note_completions')
+              .select('item_id, completed')
+              .eq('version_id', prev.id);
+            const done = (comps || []).filter((c) => c.completed).map((c) => c.item_id);
+            if (done.length) previousCompletions = done;
+          }
+        } catch (e) {
+          // Mode dégradé : pas d'évolution, fiche quand même.
+          console.warn('[analyze] plugin track context fetch failed (continuing):', e.message);
+        }
+
+        // Nom de version auto vN+1 si le client n'en a pas fourni.
+        if (!version) {
+          try {
+            const { count } = await supabaseStorage
+              .from('versions')
+              .select('id', { count: 'exact', head: true })
+              .eq('track_id', pluginTrack.id);
+            version = `v${(count || 0) + 1}`;
+          } catch { version = 'v1'; }
+        }
+      }
 
       let fileBuffer = null, fileMime = null, fileName = null;
       // Path historique : multipart upload via multer.
@@ -424,6 +516,7 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
             title: title || 'Titre inconnu',
             versionName: version || 'v1',
             projectId,
+            trackId: pluginTrack ? pluginTrack.id : null,
             vocalType,
             fiche: cachedAnalysis.fiche,
             listening: cachedAnalysis.listening || null,
@@ -675,6 +768,7 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
             cacheAudioHash, cacheParamsSig, // cache fiche (migration 031)
             // Plumbés pour persistAnalysisResult (commit 9427693)
             projectId, vocalType, copyrightAcknowledgedAt,
+            trackId: pluginTrack ? pluginTrack.id : null,
           },
         });
         return; // on ATTEND un POST /diagnose/:jobId pour reprendre
@@ -695,6 +789,7 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
         uploadType,
         // Plumbés pour persistAnalysisResult (commit 9427693)
         projectId, vocalType, copyrightAcknowledgedAt,
+        trackId: pluginTrack ? pluginTrack.id : null,
       });
     } catch (err) {
       console.error('[analyze] error:', err.message);
@@ -763,6 +858,7 @@ async function runDiagnosticPhase(jobId, ctx) {
     // options persist, qui propageait au catch externe et marquait le job
     // en `status:error` (cf. bug 2026-05-21, commit 9427693).
     projectId, vocalType, copyrightAcknowledgedAt,
+    trackId, // plugin DAW : track lié explicite (bypass du match par titre)
   } = ctx;
 
   // ── ATTENTE Fadr + DSP en parallele (avec timeouts independants) ──
@@ -886,6 +982,7 @@ async function runDiagnosticPhase(jobId, ctx) {
       title: title || 'Titre inconnu',
       versionName: version || 'v1',
       projectId,
+      trackId: trackId || null, // plugin DAW : bypass find-or-create par titre
       vocalType,
       fiche,
       listening,
