@@ -341,10 +341,44 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
     }
     if (quota && quota.allowed === true) quotaConsumed = true;
 
-    const { title, vocalType } = req.body;
+    const { title, vocalType, channelType,
+            userLevel, userMonitors, userHeadphones, userGenres } = req.body;
+
+    // ── Contexte additionnel (2026-06-12) ──────────────────────────────
+    // 1) PISTE ISOLÉE : l'express écoute l'instance du plugin — sur une
+    //    piste c'est un STEM, pas un mix. Sans cette règle, Gemini jugeait
+    //    des chœurs comme un mix ("il manque la batterie").
+    const extra = [];
+    if (channelType && !/master|mix bus|music bus/i.test(String(channelType))) {
+      extra.push(
+        `IMPORTANT - CONTEXTE D'ECOUTE : tu ecoutes une PISTE ISOLEE ` +
+        `(« ${String(channelType).slice(0, 60)} »), PAS un mix complet. ` +
+        `Evalue-la comme un stem : timbre, dynamique, transitoires, problemes ` +
+        `propres a ce type de piste (sibilance pour une voix, definition/sub ` +
+        `pour une basse, punch/corps pour des drums...). NE COMMENTE PAS ` +
+        `l'absence des autres instruments, ni l'equilibre global du mix, ni ` +
+        `la "separation des elements" : ils ne sont pas dans ce que tu entends.`);
+    }
+    // 2) PROFIL UTILISATEUR (champs envoyés par le plugin, vides omis).
+    //    Règle (leçon du verdict→chat) : dire QUAND ce bloc s'applique.
+    const prof = [];
+    if (userLevel)      prof.push(`Niveau : ${String(userLevel).slice(0, 40)} (Beginner = vulgarise et explique chaque terme ; Pro/Expert = direct et technique).`);
+    if (userMonitors)   prof.push(`Monitors : ${String(userMonitors).slice(0, 80)}.`);
+    if (userHeadphones) prof.push(`Casques : ${String(userHeadphones).slice(0, 80)}.`);
+    if (userGenres)     prof.push(`Genres habituels : ${String(userGenres).slice(0, 80)}.`);
+    if (prof.length) {
+      extra.push(
+        `PROFIL UTILISATEUR (contexte d'ecoute SEULEMENT — n'en parle que si ` +
+        `un point precis y gagne, ex. limite de bas du spectre des monitors → ` +
+        `suggerer une verification au casque. N'invente JAMAIS de specs de ` +
+        `materiel que tu ne connais pas, et n'ouvre pas le verdict par le profil) :\n`
+        + prof.join('\n'));
+    }
+
     const listening = await analyzeListeningExpress(
       req.file.buffer, req.file.mimetype || 'audio/wav',
-      title || 'ce morceau', '', undefined, vocalType || 'vocal', 'fr'
+      title || 'ce morceau', '', undefined, vocalType || 'vocal', 'fr',
+      extra.length ? { extraContext: extra.join('\n\n') } : {}
     );
     const parts = [];
     if (listening && listening.impression) parts.push(String(listening.impression));
