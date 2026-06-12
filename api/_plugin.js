@@ -139,12 +139,15 @@ function formatContext(ctx) {
   // Verdict de la derniere ecoute express de CETTE instance (extrait ~30 s
   // ecoute par l'IA pendant la session en cours). Sert aux questions de
   // suivi : l'utilisateur vient de le lire et enchaine ("comment je corrige
-  // les sibilantes ?", "c'est grave ?").
+  // les sibilantes ?", "le 1er point ?"). Regle de resolution DURCIE apres
+  // le test 2026-06-12 : "le 1er point" repondait True Peak (fiche) au lieu
+  // de la caisse claire (verdict express) — l'express est le message le plus
+  // RECENT que l'utilisateur a sous les yeux, il prime sur la fiche.
   if (ctx.expressVerdict) {
     block +=
-      `ECOUTE EXPRESS (verdict de la derniere ecoute express dans CETTE session, extrait ~30 s) :\n` +
+      `ECOUTE EXPRESS (verdict de la DERNIERE ecoute express de cette session — c'est le dernier feedback que l'utilisateur a recu et lu) :\n` +
       `${String(ctx.expressVerdict).slice(0, 2500)}\n` +
-      `Les questions de suivi de l'utilisateur se rapportent souvent a ce verdict — appuie-toi dessus en priorite pour "ca"/"ce probleme". C'est un INSTANT de la session : si le metering actuel a change depuis (reglages retouches), dis-le.\n\n`;
+      `REGLE DE PRIORITE : quand l'utilisateur fait reference a un point sans le nommer ("le 1er point", "le 2e", "ca", "ce probleme", "comment je corrige"), il parle des points "A travailler" de CE verdict express — PAS de la fiche versions.studio (plus ancienne). Reponds sur le point exact du verdict. C'est un INSTANT de la session : si le metering actuel a change depuis, dis-le.\n\n`;
   }
 
   return block;
