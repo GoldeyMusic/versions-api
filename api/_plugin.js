@@ -136,6 +136,17 @@ function formatContext(ctx) {
       `Sers-t'en comme reference de fond sur CE morceau. ATTENTION : le metering ci-dessus est l'etat ACTUEL dans le DAW et peut differer de la version analysee — si ca diverge, dis-le.\n\n`;
   }
 
+  // Verdict de la derniere ecoute express de CETTE instance (extrait ~30 s
+  // ecoute par l'IA pendant la session en cours). Sert aux questions de
+  // suivi : l'utilisateur vient de le lire et enchaine ("comment je corrige
+  // les sibilantes ?", "c'est grave ?").
+  if (ctx.expressVerdict) {
+    block +=
+      `ECOUTE EXPRESS (verdict de la derniere ecoute express dans CETTE session, extrait ~30 s) :\n` +
+      `${String(ctx.expressVerdict).slice(0, 2500)}\n` +
+      `Les questions de suivi de l'utilisateur se rapportent souvent a ce verdict — appuie-toi dessus en priorite pour "ca"/"ce probleme". C'est un INSTANT de la session : si le metering actuel a change depuis (reglages retouches), dis-le.\n\n`;
+  }
+
   return block;
 }
 
