@@ -357,7 +357,12 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
         `propres a ce type de piste (sibilance pour une voix, definition/sub ` +
         `pour une basse, punch/corps pour des drums...). NE COMMENTE PAS ` +
         `l'absence des autres instruments, ni l'equilibre global du mix, ni ` +
-        `la "separation des elements" : ils ne sont pas dans ce que tu entends.`);
+        `la "separation des elements" : ils ne sont pas dans ce que tu entends. ` +
+        `ETIQUETAGE PRUDENT : ne nomme un instrument que si tu l'identifies ` +
+        `CLAIREMENT. Ce bus ne contient pas forcement l'instrumentation ` +
+        `typique du genre — s'il y a de l'energie dans le bas du spectre, ` +
+        `dis "le bas du spectre de ce bus" ou "le registre grave des keys", ` +
+        `PAS "la basse" (elle est peut-etre sur une autre piste).`);
     }
     // 2) PROFIL UTILISATEUR (champs envoyés par le plugin, vides omis).
     //    Règle (leçon du verdict→chat) : dire QUAND ce bloc s'applique.
