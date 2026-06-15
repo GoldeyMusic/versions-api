@@ -245,6 +245,24 @@ Garde-fou coût (migration `versions-app/supabase/migrations/033_plugin_express_
   seulement quand le plugin envoie un token (Phase 2.B auth). Sans token =
   mode dégradé (helper `callExpressQuotaRpc` renvoie null, pas de blocage).
 
+### Profil utilisateur + mode stem (DÉPLOYÉ, commits 1b55c40 / 4cc8afb)
+
+`/api/plugin/express` lit 4 champs de form optionnels (`userLevel`,
+`userMonitors`, `userHeadphones`, `userGenres`) + `channelType`, et les injecte
+dans le prompt Gemini via `opts.extraContext` (apposé au prompt dans
+`lib/gemini.js::analyzeListening`) :
+- **Profil** : bloc « contexte d'écoute SEULEMENT, n'en parle que si un point y
+  gagne » (niveau → vocabulaire ; monitors/casques → contextualiser sans
+  inventer de specs).
+- **Mode stem** : si `channelType` n'est pas un bus de somme (`/master|mix
+  bus|music bus/i`), bascule en « PISTE ISOLÉE » → évalue comme un stem
+  (timbre/dynamique/transitoires), NE commente PAS l'absence des autres
+  instruments ni l'équilibre du mix, étiquetage prudent des instruments
+  (« le bas du spectre de ce bus », pas « la basse »).
+- Sur `main` = en phase avec `origin/main` → **auto-déployé sur Railway**.
+  Validé par David (drum bus / instrument bus). Réf : `versions-plugin/docs/
+  EXPRESS_PROFILE_BACKEND.md`.
+
 ## Points en suspens
 
 - **Configurer cron mensuel newsletter** sur cron-job.org (ou Railway
