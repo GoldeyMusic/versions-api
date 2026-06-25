@@ -191,6 +191,10 @@ function formatSpectra(metering, ctx) {
 
 // ─── POST /api/plugin/feedback ───────────────────────────────────
 router.post('/feedback', requirePluginAuth, async (req, res) => {
+  // JWT user (envoyé par le plugin en plus du secret partagé) → identifie
+  // l'utilisateur pour le quota chat. Absent (vieux binaire) → mode dégradé.
+  const userToken = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  let chatConsumed = false;
   try {
     const { metering, context, question, model } = req.body || {};
 
@@ -200,6 +204,27 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
     if (question.length > 2000) {
       return res.status(400).json({ error: 'question_too_long' });
     }
+
+    // ── Garde-fou coût chat : consomme 1 message AVANT l'appel Claude ──
+    // Gratuit = 10/jour, abonné = 1000/mois (plugin_chat_consume décide selon
+    // l'abonnement). allowed:false → on renvoie un message (HTTP 200 pour que
+    // le plugin l'affiche dans le fil), SANS appeler Claude. Pas de token /
+    // RPC indispo → null → mode dégradé (pas de blocage), comme l'express.
+    // Le refund (catch) annule la conso si Claude échoue (jamais débiter sur échec).
+    const quota = await callPluginQuotaRpc('plugin_chat_consume', userToken);
+    if (quota && quota.allowed === false) {
+      const perDay = quota.period === 'day';
+      const replyText = perDay
+        ? `Tu as atteint ta limite de ${quota.limit || 10} messages par jour dans le chat. `
+          + `Reviens demain — ou passe en illimité (abonnement Indie ou Pro) sur versions.studio.`
+        : `Tu as atteint ta limite de messages ce mois-ci. `
+          + `Passe en illimité sur versions.studio.`;
+      return res.json({
+        reply: replyText,
+        quota: { exceeded: true, feature: 'chat', limit: quota.limit, period: quota.period },
+      });
+    }
+    if (quota && quota.allowed === true) chatConsumed = true;
 
     // Diagnostic Console View : visible dans les logs Railway. Permet de
     // vérifier en 10 s si le plugin envoie bien context.console (sinon =
@@ -291,6 +316,8 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
     return res.json({ reply: cleanReply, model: modelToUse });
   } catch (err) {
     console.error('[plugin/feedback] error:', err && err.message);
+    // Claude a échoué après la conso → rembourse le message (jamais débiter sur échec).
+    if (chatConsumed) await callPluginQuotaRpc('plugin_chat_refund', userToken);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
@@ -304,9 +331,11 @@ const multerExpress = require('multer');
 const { analyzeListening: analyzeListeningExpress } = require('../lib/gemini');
 const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-// Helper RPC quota (consume / refund) avec le JWT user. Renvoie null si pas
-// de token ou si la RPC échoue (mode dégradé : on ne bloque pas l'écoute).
-async function callExpressQuotaRpc(fn, userToken) {
+// Helper RPC quota (consume / status / refund) avec le JWT user — partagé par
+// l'écoute express ET le chat. Renvoie null si pas de token ou si la RPC échoue
+// (mode dégradé : on ne bloque pas). Déclaration hoistée → utilisable depuis les
+// handlers définis plus haut dans le fichier.
+async function callPluginQuotaRpc(fn, userToken) {
   if (!userToken) return null;
   try {
     const fetchQuota = require('node-fetch');
@@ -321,7 +350,7 @@ async function callExpressQuotaRpc(fn, userToken) {
     });
     return await r.json().catch(() => null);
   } catch (e) {
-    console.warn(`[plugin/express] rpc ${fn} failed:`, e.message);
+    console.warn(`[plugin/quota] rpc ${fn} failed:`, e.message);
     return null;
   }
 }
@@ -335,7 +364,7 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
     // Garde-fou coût : consomme 1 écoute AVANT l'analyse (anti-spam). Si la
     // RPC dit "non" → 429. Si pas de token / RPC indispo → mode dégradé
     // (pas de blocage). Le refund (catch) annule la conso en cas d'échec.
-    const quota = await callExpressQuotaRpc('plugin_express_consume', userTokenExpress);
+    const quota = await callPluginQuotaRpc('plugin_express_consume', userTokenExpress);
     if (quota && quota.allowed === false) {
       return res.status(429).json({ error: 'express_quota', used: quota.used, limit: quota.limit });
     }
@@ -397,7 +426,7 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
   } catch (err) {
     console.error('[plugin/express] error:', err && err.message);
     // Écoute échouée → rembourse l'écoute consommée (jamais débiter sur échec)
-    if (quotaConsumed) await callExpressQuotaRpc('plugin_express_refund', userTokenExpress);
+    if (quotaConsumed) await callPluginQuotaRpc('plugin_express_refund', userTokenExpress);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
