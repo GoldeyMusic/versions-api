@@ -206,7 +206,7 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
     }
 
     // ── Garde-fou coût chat : consomme 1 message AVANT l'appel Claude ──
-    // Gratuit = 10/jour, abonné = 1000/mois (plugin_chat_consume décide selon
+    // Gratuit = 15/jour, abonné = 1000/mois (plugin_chat_consume décide selon
     // l'abonnement). allowed:false → on renvoie un message (HTTP 200 pour que
     // le plugin l'affiche dans le fil), SANS appeler Claude. Pas de token /
     // RPC indispo → null → mode dégradé (pas de blocage), comme l'express.
@@ -215,7 +215,7 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
     if (quota && quota.allowed === false) {
       const perDay = quota.period === 'day';
       const replyText = perDay
-        ? `Tu as atteint ta limite de ${quota.limit || 10} messages par jour dans le chat. `
+        ? `Tu as atteint ta limite de ${quota.limit || 15} messages par jour dans le chat. `
           + `Reviens demain — ou passe en illimité (abonnement Indie ou Pro) sur versions.studio.`
         : `Tu as atteint ta limite de messages ce mois-ci. `
           + `Passe en illimité sur versions.studio.`;
