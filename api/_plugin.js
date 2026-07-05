@@ -431,4 +431,109 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
   }
 });
 
+// ─── POST /api/plugin/download — tracking du téléchargement ──────
+// Le téléchargement du plugin est gaté par le login sur le SITE (décision
+// David 2026-07-05) : PluginScreen n'affiche les liens /downloads/* qu'aux
+// connectés, et poste ici en fire-and-forget au clic (apiFetchJson → Bearer
+// JWT du site, PAS le X-Plugin-Secret — c'est un appel webapp, pas plugin).
+// On logge en base (table plugin_downloads, migration 043 versions-app,
+// service role) + notif email ops (notifyOps → OPS_NOTIFY_EMAIL).
+// IMPORTANT : cette route ne doit JAMAIS bloquer un téléchargement — le
+// fichier part en statique côté site quoi qu'il arrive ; ici tout échec
+// est loggé puis avalé (200 quand même une fois l'auth passée).
+
+const { requireAuth: requireUserAuth } = require('../lib/auth');
+const { notifyOps: notifyOpsDownload, renderOpsEmail: renderOpsEmailDownload } = require('../lib/notifyOps');
+
+// Version courante du plugin — lue de plugin-version.json (déjà maintenu à
+// chaque release par release.sh + déploiement site), cachée 10 min. Échec
+// réseau → null (la colonne version reste vide, rien ne casse).
+let pluginVersionCache = { value: null, at: 0 };
+async function getLatestPluginVersion() {
+  const TTL = 10 * 60 * 1000;
+  if (pluginVersionCache.value && Date.now() - pluginVersionCache.at < TTL) {
+    return pluginVersionCache.value;
+  }
+  try {
+    const base = process.env.APP_BASE_URL || 'https://versions.studio';
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 3000);
+    const r = await fetch(`${base}/plugin-version.json`, { signal: controller.signal });
+    clearTimeout(tid);
+    if (r.ok) {
+      const j = await r.json();
+      if (j && typeof j.latest === 'string') {
+        pluginVersionCache = { value: j.latest, at: Date.now() };
+        return j.latest;
+      }
+    }
+  } catch { /* silencieux — la version est un nice-to-have */ }
+  return null;
+}
+
+router.post('/download', requireUserAuth, async (req, res) => {
+  const raw = req.body && req.body.platform;
+  const platform = raw === 'mac' || raw === 'windows' ? raw : null;
+  if (!platform) return res.status(400).json({ error: 'invalid_platform' });
+
+  try {
+    const { createClient } = require('@supabase/supabase-js');
+    const sb = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      { auth: { persistSession: false, autoRefreshToken: false } }
+    );
+
+    const version = await getLatestPluginVersion();
+    const { error: insErr } = await sb.from('plugin_downloads').insert({
+      user_id: req.user.id,
+      email: req.user.email || null,
+      platform,
+      version,
+      user_agent: (req.get('user-agent') || '').slice(0, 500) || null,
+    });
+    if (insErr) console.error('[plugin/download] insert failed:', insErr.message);
+
+    // Compteur pour l'email : n-ième téléchargement de ce user (tous OS).
+    let nth = null;
+    try {
+      const { count } = await sb
+        .from('plugin_downloads')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', req.user.id);
+      if (typeof count === 'number') nth = count;
+    } catch { /* compteur = nice-to-have */ }
+
+    const signedUp = req.user.created_at
+      ? new Date(req.user.created_at).toLocaleDateString('fr-FR', {
+          day: '2-digit', month: '2-digit', year: 'numeric',
+        })
+      : null;
+
+    // notifyOps catch tout en interne (jamais de throw) — on await pour ne
+    // pas perdre l'envoi si la plateforme recycle le process après la réponse.
+    await notifyOpsDownload({
+      subject: `⬇️ Plugin téléchargé — ${req.user.email || req.user.id} (${platform === 'mac' ? 'macOS' : 'Windows'})`,
+      html: renderOpsEmailDownload({
+        title: 'Téléchargement du plugin',
+        intro: 'Un utilisateur connecté vient de télécharger le plugin depuis versions.studio/plugin.',
+        rows: [
+          { label: 'Utilisateur', value: req.user.email || req.user.id },
+          { label: 'Plateforme', value: platform === 'mac' ? 'macOS (.dmg)' : 'Windows (.exe)' },
+          { label: 'Version', value: version },
+          { label: 'Téléchargement n°', value: nth },
+          { label: 'Inscrit le', value: signedUp },
+        ],
+      }),
+      text: `Plugin téléchargé (${platform}) par ${req.user.email || req.user.id}`,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[plugin/download] error:', err && err.message);
+    // Le tracking ne doit jamais faire échouer l'expérience côté site.
+    return res.json({ ok: false });
+  }
+});
+
 module.exports = router;
