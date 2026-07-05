@@ -2,9 +2,10 @@
  * api/_internal.js — endpoints appelés par Supabase Database Webhooks.
  *
  * Routes :
- *   POST /api/internal/notify-signup    → email ops "Nouvel inscrit"
- *   POST /api/internal/notify-deletion  → email ops "Compte supprimé"
- *   POST /api/internal/notify-feedback  → email ops "Nouvel avis testeur"
+ *   POST /api/internal/notify-signup             → email ops "Nouvel inscrit"
+ *   POST /api/internal/notify-deletion           → email ops "Compte supprimé"
+ *   POST /api/internal/notify-feedback           → email ops "Nouvel avis testeur"
+ *   POST /api/internal/notify-plugin-first-seen  → email ops "Plugin installé"
  *
  * Auth :
  *   Header `X-Notify-Secret` comparé à process.env.INTERNAL_NOTIFY_SECRET.
@@ -219,6 +220,85 @@ router.post('/notify-feedback', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('[internal/notify-feedback] failed:', err.message, err.stack);
+    res.status(500).json({ error: 'handler_failed' });
+  }
+});
+
+// ─── POST /notify-plugin-first-seen ─────────────────────────
+// Déclenché par un Supabase Database Webhook sur INSERT
+// public.plugin_first_seen (migration 044 versions-app). La ligne est
+// insérée par plugin_touch_first_seen(), greffée dans les RPC que le
+// plugin appelle à chaque ouverture (plugin_get_account + les 2 status
+// de quota) — INSERT ... ON CONFLICT DO NOTHING → le webhook ne part
+// qu'UNE fois par user : c'est le signal "installation réelle" (vs
+// simple téléchargement, cf. plugin_downloads / notif download).
+// On enrichit avec le contexte funnel : téléchargement loggé ? quand ?
+// et la date d'inscription (pour repérer les anciens membres).
+router.post('/notify-plugin-first-seen', async (req, res) => {
+  try {
+    const { type, record } = req.body || {};
+    if (type !== 'INSERT' || !record?.user_id) {
+      return res.status(400).json({ error: 'unexpected_payload' });
+    }
+
+    const userId = record.user_id;
+    let email = record.email || null;
+
+    // Contexte best-effort (email manquant, inscription, download) — tout
+    // échec ici ne bloque jamais la notif.
+    let signedUpAt = null;
+    let downloadInfo = null;
+    const admin = getAdminClient();
+    if (admin) {
+      try {
+        const { data, error } = await admin.auth.admin.getUserById(userId);
+        if (!error && data?.user) {
+          if (!email) email = data.user.email || null;
+          signedUpAt = data.user.created_at || null;
+        }
+      } catch (e) {
+        console.warn('[internal/notify-plugin-first-seen] getUserById failed:', e.message);
+      }
+      try {
+        const { data: dls } = await admin
+          .from('plugin_downloads')
+          .select('platform, created_at')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (Array.isArray(dls) && dls.length > 0) {
+          const d = dls[0];
+          const when = typeof d.created_at === 'string' ? d.created_at.slice(0, 16).replace('T', ' ') + ' UTC' : '';
+          downloadInfo = `${d.platform === 'mac' ? 'macOS' : 'Windows'} · ${when}`;
+        } else {
+          downloadInfo = 'Aucun téléchargement loggé (installé avant le gate, ou binaire partagé)';
+        }
+      } catch (e) {
+        console.warn('[internal/notify-plugin-first-seen] downloads lookup failed:', e.message);
+      }
+    }
+
+    const firstSeen = record.first_seen_at || new Date().toISOString();
+    const who = email || `user ${String(userId).slice(0, 8)}…`;
+
+    await notifyOps({
+      subject: `[Versions] Plugin installé · ${who}`,
+      html: renderOpsEmail({
+        title: 'Première connexion depuis le plugin',
+        intro: `${who} vient de se connecter depuis le plugin DAW pour la première fois — installation réelle confirmée.`,
+        rows: [
+          { label: 'Utilisateur', value: email || userId },
+          { label: 'Première connexion', value: typeof firstSeen === 'string' ? firstSeen.slice(0, 16).replace('T', ' ') + ' UTC' : '—' },
+          { label: 'Dernier téléchargement', value: downloadInfo },
+          { label: 'Inscrit le', value: typeof signedUpAt === 'string' ? signedUpAt.slice(0, 10) : null },
+          { label: 'User ID', value: userId },
+        ],
+      }),
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[internal/notify-plugin-first-seen] failed:', err.message, err.stack);
     res.status(500).json({ error: 'handler_failed' });
   }
 });
