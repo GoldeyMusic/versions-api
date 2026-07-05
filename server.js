@@ -72,6 +72,12 @@ app.use('/api/account', require('./api/_account'));
 // l'auth se fait via shared secret (cron externe, pas un user authentifié).
 app.use('/api/newsletter', require('./api/_newsletter'));
 
+// ─── Annonce one-shot : sortie du plugin DAW ──────────────────────
+// POST /api/announce-plugin/send    → envoie l'annonce (dry=1, only=...)
+// GET  /api/announce-plugin/preview → preview HTML
+// Gated par X-Admin-Secret, même mécanique que la newsletter.
+app.use('/api/announce-plugin', require('./api/_announcement'));
+
 // ─── Plugin DAW — Phase 2.A ───────────────────────────────────────
 // POST /api/plugin/feedback  → metering + question → réponse Claude
 // GET  /api/plugin/ping      → healthcheck (pas gated)
