@@ -147,7 +147,7 @@ function formatContext(ctx) {
     block +=
       `ECOUTE EXPRESS (verdict de la DERNIERE ecoute express de cette session — c'est le dernier feedback que l'utilisateur a recu et lu) :\n` +
       `${String(ctx.expressVerdict).slice(0, 2500)}\n` +
-      `REGLE DE PRIORITE : quand l'utilisateur fait reference a un point sans le nommer ("le 1er point", "le 2e", "ca", "ce probleme", "comment je corrige"), il parle des points "A travailler" de CE verdict express — PAS de la fiche versions.studio (plus ancienne). Reponds sur le point exact du verdict. C'est un INSTANT de la session : si le metering actuel a change depuis, dis-le.\n\n`;
+      `REGLE DE PRIORITE : quand l'utilisateur fait reference a un point sans le nommer ("le 1er point", "le 2e", "ca", "ce probleme", "comment je corrige"), il parle des points "A travailler" de CE verdict express — PAS de la fiche versions.studio (plus ancienne). EXCEPTION : si le fil de conversation fourni contient deja l'antecedent (une de TES reponses precedentes definit "ca"), le fil PRIME sur le verdict (plus recent et plus specifique). Reponds sur le point exact. C'est un INSTANT de la session : si le metering actuel a change depuis, dis-le.\n\n`;
   }
 
   return block;
@@ -226,13 +226,31 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
     }
     if (quota && quota.allowed === true) chatConsumed = true;
 
+    // ── Mémoire de conversation (plugin ≥ 1.0.5, 2026-07-09) ──
+    // context.history = les derniers échanges [{q, a}] du fil, du plus ancien
+    // au plus récent (déjà plafonné à 8 tours / réponses 1200 chars côté
+    // plugin). On reconstruit un vrai fil user/assistant → l'IA comprend les
+    // questions de suivi ("comment je corrige ça ?") au lieu de repartir de
+    // zéro à chaque message. Le contexte/metering live ne voyage QUE dans le
+    // system prompt (valeurs ACTUELLES) — les tours passés sont du texte nu.
+    // Champ absent (vieux binaire) → historique vide → comportement d'avant.
+    const history = Array.isArray(context && context.history) ? context.history : [];
+    const historyMessages = [];
+    for (const t of history.slice(-8)) {
+      const q = t && typeof t.q === 'string' ? t.q.trim() : '';
+      const a = t && typeof t.a === 'string' ? t.a.trim() : '';
+      if (!q || !a) continue; // paires complètes only → alternance user/assistant garantie
+      historyMessages.push({ role: 'user', content: q.slice(0, 2000) });
+      historyMessages.push({ role: 'assistant', content: a.slice(0, 2000) });
+    }
+
     // Diagnostic Console View : visible dans les logs Railway. Permet de
     // vérifier en 10 s si le plugin envoie bien context.console (sinon =
     // vieux binaire en mémoire dans Logic).
     const consoleInfo = Array.isArray(context && context.console)
       ? `${context.console.length} pistes (${context.console.filter((t) => t.playing).length} en lecture)`
       : 'ABSENT';
-    console.log(`[plugin/feedback] console: ${consoleInfo} · canal: ${(context && context.instrumentType) || '?'}`);
+    console.log(`[plugin/feedback] console: ${consoleInfo} · canal: ${(context && context.instrumentType) || '?'} · historique: ${historyMessages.length / 2} tours`);
 
     const meteringText = formatMetering(metering);
     const contextText = formatContext(context);
@@ -257,6 +275,13 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `- Donne des valeurs précises (Hz, dB, ratio, ms, LU) quand c'est utile.\n` +
       `- Si la question est ambiguë ou hors-sujet du metering, demande UNE précision en 1 phrase plutôt que de deviner.\n` +
       `- Ancre toujours ta réponse sur les valeurs de metering ci-dessus quand elles sont pertinentes.\n\n` +
+      (historyMessages.length > 0
+        ? `MEMOIRE DE CONVERSATION (des messages précédents sont fournis dans le fil) :\n` +
+          `- Ce fil est TA conversation en cours avec cet utilisateur — c'est le contexte le plus récent, il PRIME sur tout le reste.\n` +
+          `- Les références sans antécédent ("ça", "ce problème", "le 1er point", "comment je corrige") renvoient D'ABORD au fil ci-dessus s'il contient la réponse, SINON au verdict express, SINON à la fiche.\n` +
+          `- NE répète PAS les chiffres, mesures ou explications déjà donnés dans le fil, SAUF si les valeurs ont changé — les mesures de CE system prompt sont les valeurs ACTUELLES, seule source de chiffres à jour (celles citées dans les vieux messages du fil sont périmées).\n` +
+          `- Réponds dans la continuité : court, ciblé sur la question posée. Pas de nouvelle analyse complète si on ne te la demande pas.\n\n`
+        : ``) +
       `RÈGLES SESSION — CONSEIL INTER-PISTES (si un bloc SESSION est fourni) :\n` +
       `- Le bloc SESSION liste les autres pistes du projet équipées d'une instance Versions, avec leurs mesures live. La piste analysée (celle du chat) est "${(context && context.instrumentType) || 'inconnue'}". Si tu nommes cette vue, dis "la session" (jamais "la console").\n` +
       `- Tu peux et DOIS t'en servir pour raisonner inter-pistes quand c'est pertinent : équilibres de niveaux entre pistes (deltas LUFS short-term), dynamique relative (crest), risques de masquage PROBABLES entre registres voisins (ex. basse vs batterie dans le bas du spectre).\n` +
@@ -281,7 +306,7 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       `- dBTP : aussi échelle négative. −1 dBTP est plus haut que −3 dBTP ; proche de 0 = risque de clip.\n` +
       `- Si tu n'es pas SÛR du sens d'un delta, pas de chiffre — formule qualitativement ("tu es dans la zone cible", "au-dessus / en dessous").`;
 
-    const messages = [{ role: 'user', content: question.trim() }];
+    const messages = [...historyMessages, { role: 'user', content: question.trim() }];
 
     // Default Haiku — économique, suffisant pour Q&A courtes sur du metering.
     // L'app peut demander Sonnet via { "model": "sonnet" } si besoin (réponse
