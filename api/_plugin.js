@@ -462,13 +462,17 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
 // connectés, et poste ici en fire-and-forget au clic (apiFetchJson → Bearer
 // JWT du site, PAS le X-Plugin-Secret — c'est un appel webapp, pas plugin).
 // On logge en base (table plugin_downloads, migration 043 versions-app,
-// service role) + notif email ops (notifyOps → OPS_NOTIFY_EMAIL).
+// service role). PLUS de notif email ici (retirée 2026-07-10, décision
+// David) : doublon avec la notif "Plugin installé" (webhook
+// notify-plugin-first-seen, migration 044) qui est le vrai signal, et
+// faux positifs fréquents (clics par erreur sur mobile). La table
+// continue d'être alimentée — elle sert de source à la répartition
+// Mac/Windows dans l'admin (RPC admin_get_plugin_installs, mig 045).
 // IMPORTANT : cette route ne doit JAMAIS bloquer un téléchargement — le
 // fichier part en statique côté site quoi qu'il arrive ; ici tout échec
 // est loggé puis avalé (200 quand même une fois l'auth passée).
 
 const { requireAuth: requireUserAuth } = require('../lib/auth');
-const { notifyOps: notifyOpsDownload, renderOpsEmail: renderOpsEmailDownload } = require('../lib/notifyOps');
 
 // Version courante du plugin — lue de plugin-version.json (déjà maintenu à
 // chaque release par release.sh + déploiement site), cachée 10 min. Échec
@@ -518,40 +522,6 @@ router.post('/download', requireUserAuth, async (req, res) => {
       user_agent: (req.get('user-agent') || '').slice(0, 500) || null,
     });
     if (insErr) console.error('[plugin/download] insert failed:', insErr.message);
-
-    // Compteur pour l'email : n-ième téléchargement de ce user (tous OS).
-    let nth = null;
-    try {
-      const { count } = await sb
-        .from('plugin_downloads')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', req.user.id);
-      if (typeof count === 'number') nth = count;
-    } catch { /* compteur = nice-to-have */ }
-
-    const signedUp = req.user.created_at
-      ? new Date(req.user.created_at).toLocaleDateString('fr-FR', {
-          day: '2-digit', month: '2-digit', year: 'numeric',
-        })
-      : null;
-
-    // notifyOps catch tout en interne (jamais de throw) — on await pour ne
-    // pas perdre l'envoi si la plateforme recycle le process après la réponse.
-    await notifyOpsDownload({
-      subject: `⬇️ Plugin téléchargé — ${req.user.email || req.user.id} (${platform === 'mac' ? 'macOS' : 'Windows'})`,
-      html: renderOpsEmailDownload({
-        title: 'Téléchargement du plugin',
-        intro: 'Un utilisateur connecté vient de télécharger le plugin depuis versions.studio/plugin.',
-        rows: [
-          { label: 'Utilisateur', value: req.user.email || req.user.id },
-          { label: 'Plateforme', value: platform === 'mac' ? 'macOS (.dmg)' : 'Windows (.exe)' },
-          { label: 'Version', value: version },
-          { label: 'Téléchargement n°', value: nth },
-          { label: 'Inscrit le', value: signedUp },
-        ],
-      }),
-      text: `Plugin téléchargé (${platform}) par ${req.user.email || req.user.id}`,
-    });
 
     return res.json({ ok: true });
   } catch (err) {
