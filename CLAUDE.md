@@ -37,6 +37,7 @@ selon la route :
 | `/api/billing`       | Bearer pour `/checkout` + `/cancel-subscription`, signature Stripe pour `/webhook` | Stripe |
 | `/api/internal`      | `X-Notify-Secret`                 | Webhooks Supabase DB (signup, deletion, feedback) |
 | `/api/newsletter`    | `X-Admin-Secret` (ou `?secret=`)  | Newsletter mensuelle |
+| `/api/welcome-email` | `X-Admin-Secret` (ou `?secret=`)  | Mail de bienvenue abonné (envoi manuel + preview) |
 
 Le router `/api/billing` doit être monté **avant** `express.json()`
 global parce que `/billing/webhook` a besoin du raw body pour la
@@ -183,6 +184,21 @@ Optionnelles :
 - `MONETIZATION_ENABLED` (toggle débit côté pipeline analyze)
 
 ## Livré récemment
+
+**2026-07-14** :
+- **Mail de bienvenue abonné** (`lib/welcomeSubscriber.js` + `api/_welcome.js`).
+  Envoi automatique dans `handleSubscriptionInvoice` (`api/_billing.js`)
+  UNIQUEMENT sur `invoice.billing_reason === 'subscription_create'` — jamais
+  sur les renouvellements. Contenu validé par David (pas de rappel résiliation,
+  pas de montant) : fonctions des analyses, avantage plugin illimité (écoute
+  express + chat IA), crédits cumulables, CTA `/analyse`. Même shell visuel
+  que l'annonce plugin (560px, wordmark amber, light-only). `sendSubscriberWelcome`
+  ne throw jamais (webhook safety). Envoi manuel de rattrapage :
+  `POST /api/welcome-email/send?to=email&plan=sub_pro[&credits=N][&dry=1]`,
+  preview `GET /api/welcome-email/preview?plan=sub_pro[&name=X]` — gated
+  `X-Admin-Secret` ou `?secret=`. Prénom résolu via Admin API + `profiles.prenom`
+  (fallback "Salut,"). Premier envoi réel : verdoljose2@gmail.com (sub_pro
+  du 2026-07-14, souscrit avant la mise en place du mail).
 
 **2026-05-31** :
 - **Endpoint `POST /api/billing/cancel-subscription`** dans `api/_billing.js`.

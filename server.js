@@ -78,6 +78,13 @@ app.use('/api/newsletter', require('./api/_newsletter'));
 // Gated par X-Admin-Secret, même mécanique que la newsletter.
 app.use('/api/announce-plugin', require('./api/_announcement'));
 
+// ─── Mail de bienvenue abonné (envoi manuel / preview) ────────────
+// L'envoi normal est automatique via le webhook Stripe (_billing.js).
+// POST /api/welcome-email/send?to=...&plan=sub_pro → envoi manuel (rattrapage)
+// GET  /api/welcome-email/preview?plan=sub_pro     → preview HTML
+// Gated par X-Admin-Secret, même mécanique que la newsletter.
+app.use('/api/welcome-email', require('./api/_welcome'));
+
 // ─── Plugin DAW — Phase 2.A ───────────────────────────────────────
 // POST /api/plugin/feedback  → metering + question → réponse Claude
 // GET  /api/plugin/ping      → healthcheck (pas gated)

@@ -32,6 +32,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { getStripe } = require('../lib/stripe');
 const { applyCreditDelta, purgeSubscriptionBalance } = require('../lib/credits');
 const { notifyOps, renderOpsEmail, stripeUrl } = require('../lib/notifyOps');
+const { sendSubscriberWelcome } = require('../lib/welcomeSubscriber');
 
 const router = express.Router();
 
@@ -629,6 +630,19 @@ async function handleSubscriptionInvoice({ invoice, subscriptionId, stripe, even
       footerLink: stripeUrl({ livemode, kind: 'subscriptions', id: subscriptionId }),
     }),
   });
+
+  // ─── Mail de bienvenue au client ──────────────────────────
+  // Uniquement sur la 1ère facture (création d'abo), jamais sur les
+  // renouvellements. sendSubscriberWelcome ne throw jamais : un mail
+  // raté ne doit pas faire retry le webhook (crédits déjà appliqués).
+  if (isInitial) {
+    await sendSubscriberWelcome({
+      userId,
+      email: customerEmail !== '—' ? customerEmail : null,
+      planKey,
+      credits,
+    });
+  }
 }
 
 // ─── Logging revenue_logs ─────────────────────────────────────
