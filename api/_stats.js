@@ -18,13 +18,15 @@
  *   Cache-Control: public, max-age=300 (5 minutes).
  *
  * Données (le champ JSON `total` reste nommé `total` pour compat cockpit) :
- *   - installations UNIQUES du plugin (RPC plugin_install_stats) : un couple
- *     (email, plateforme) daté à sa 1re occurrence. Les ré-installs et les
- *     mises à jour (même email+plateforme) ne comptent qu'une fois ; le
- *     multi-plateforme (Mac + PC) compte deux installs ; l'équipe interne
- *     (STATS_EXCLUDE_EMAILS) est exclue de tous les totaux.
- *   - installs uniques 7 / 30 derniers jours (par date de 1re install)
- *   - breakdown quotidien des 90 derniers jours (installs, somme == total)
+ *   - installations RÉELLES du plugin (RPC plugin_install_stats) : un
+ *     utilisateur ayant OUVERT le plugin (table plugin_first_seen), décliné
+ *     par plateforme de téléchargement (Mac / Windows, 'unknown' si ouvert
+ *     sans download loggé). Même notion que la page /admin Versions — les
+ *     téléchargements bruts ne comptent PAS. Équipe interne
+ *     (STATS_EXCLUDE_EMAILS) exclue. Daté à first_seen_at.
+ *   - installs 7 / 30 derniers jours (par date d'ouverture réelle)
+ *   - by_platform : { mac, windows, unknown } (somme == total)
+ *   - breakdown quotidien des 90 derniers jours (somme == total)
  *   - total inscrits (auth.users via GoTrue admin API, header x-total-count)
  */
 
@@ -112,10 +114,11 @@ router.get('/downloads', async (req, res) => {
 
     res.set('Cache-Control', 'public, max-age=300');
     return res.json({
-      total: s.total || 0,            // installations uniques (hors équipe)
+      total: s.total || 0,            // installations réelles (openers × plateforme, hors équipe)
       total_users: usersTotal,
       last_7_days: s.last_7_days || 0,
       last_30_days: s.last_30_days || 0,
+      by_platform: s.by_platform || { mac: 0, windows: 0, unknown: 0 },
       daily: s.daily || [],
     });
   } catch (err) {
