@@ -354,7 +354,14 @@ router.get('/ping', (req, res) => {
 
 const multerExpress = require('multer');
 const { analyzeListening: analyzeListeningExpress } = require('../lib/gemini');
-const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+// Limite upload : 64 Mo (2026-07-21, était 20 Mo). Le plugin capture au
+// sample rate de la SESSION en WAV 16-bit : une session 192 kHz produit
+// ~23 Mo pour 30 s stéréo → file_too_large systématique avec l'ancien cap
+// (cas verdoljose2, Cubase 192 kHz / 64-bit float). Gemini reçoit le
+// fichier via la File API (pas de limite inline 20 Mo), donc relever le
+// cap est sans danger. Le vrai fix (downsample 48 kHz côté plugin) réduira
+// aussi le temps d'upload — prévu pour la prochaine release plugin.
+const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), limits: { fileSize: 64 * 1024 * 1024 } });
 
 // Helper RPC quota (consume / status / refund) avec le JWT user — partagé par
 // l'écoute express ET le chat. Renvoie null si pas de token ou si la RPC échoue
