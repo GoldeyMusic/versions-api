@@ -81,7 +81,7 @@ router.get('/downloads', async (req, res) => {
     };
 
     // Toutes les queries en parallèle
-    const [totalRes, last7Res, last30Res, dailyRes, usersRes] = await Promise.all([
+    const [totalRes, last7Res, last30Res, dailyRes, usersTotal] = await Promise.all([
       // Total downloads (count only, no data)
       sb.from('plugin_downloads').select('id', { count: 'exact', head: true }),
 
@@ -102,14 +102,18 @@ router.get('/downloads', async (req, res) => {
         .gte('created_at', isoAgo(90))
         .order('created_at', { ascending: true }),
 
-      // Total inscrits via GoTrue admin API (page=1, per_page=1 pour
-      // récupérer juste le champ `total` sans charger tous les users).
+      // Total inscrits via GoTrue admin API. ⚠️ Le nombre total est
+      // renvoyé dans le header HTTP `x-total-count`, PAS dans le body (qui
+      // ne contient que le tableau `users`). per_page=1 → on ne charge pas
+      // la liste, seul le header nous intéresse. (Ne pas passer par
+      // sb.auth.admin.listUsers : cette lib n'expose `total` que si un
+      // header Link de pagination est présent — piège silencieux.)
       fetch(`${process.env.SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=1`, {
         headers: {
           Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
           apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
         },
-      }).then((r) => r.json()),
+      }).then((r) => Number(r.headers.get('x-total-count')) || 0),
     ]);
 
     // ── Build daily map (90 jours, pré-rempli à 0) ──────────────
@@ -131,7 +135,7 @@ router.get('/downloads', async (req, res) => {
     res.set('Cache-Control', 'public, max-age=300');
     return res.json({
       total: totalRes.count || 0,
-      total_users: usersRes.total || 0,
+      total_users: usersTotal,
       last_7_days: last7Res.count || 0,
       last_30_days: last30Res.count || 0,
       daily,
