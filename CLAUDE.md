@@ -191,6 +191,29 @@ Optionnelles :
 
 ## Livré récemment
 
+**2026-07-21bis** :
+- **Télémétrie de crash front** (`api/_client_error.js`, mount dans `server.js`).
+  `POST /api/client-error` PUBLIC (le crash peut précéder l'auth), rate-limité
+  par IP en mémoire (10/h, purge auto), payload 8 kb, champs tronqués côté
+  serveur. Trois sorties : Railway logs (`grep [client-error]`), table Supabase
+  `client_errors` (migration 047 versions-app, **APPLIQUÉE**), notif ops email
+  throttlée à 1/h. Côté front : `src/lib/crashReporter.js` (window.onerror +
+  unhandledrejection, cap 3 rapports/page + dédup par message, user_id/email
+  lus du token localStorage sans importer le client supabase — il doit marcher
+  même si c'est l'init supabase qui a crashé) + `RootErrorBoundary` dans
+  `main.jsx` (écran sombre "Recharger la page" au lieu d'une page blanche) +
+  `<body style="background:#0a0b14">` inline dans `index.html`. Motivation :
+  page blanche non diagnosticable chez verdoljose2 (Windows/Edge 150) sans lui
+  demander de manipuler sa console. CSP inchangé (`connect-src` autorisait déjà
+  le domaine Railway).
+- **Express : cap upload 20 → 64 Mo** (`api/_plugin.js`). Une session 192 kHz
+  produit ~23 Mo de WAV 16-bit stéréo pour 30 s → `file_too_large` systématique
+  (cas verdoljose2 sous Cubase). Gemini reçoit le fichier via la File API, pas
+  de limite inline 20 Mo → relever le cap est sans risque. Fix complémentaire
+  côté plugin : downsample 48 kHz dans `captureSnapshotWav`
+  (`PluginProcessor.cpp`, LagrangeInterpolator) — à embarquer dans la prochaine
+  release ; le fix backend suffit pour débloquer les utilisateurs actuels.
+
 **2026-07-21** :
 - **Stats publiques plugin** (`api/_stats.js`, mount dans `server.js`).
   `GET /api/stats/downloads?token=XXX` — renvoie total téléchargements,

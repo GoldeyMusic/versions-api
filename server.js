@@ -92,6 +92,12 @@ app.use('/api/announce-plugin', require('./api/_announcement'));
 // Gated par X-Admin-Secret, même mécanique que la newsletter.
 app.use('/api/welcome-email', require('./api/_welcome'));
 
+// ─── Rapports de crash front ──────────────────────────────────────
+// POST /api/client-error → Railway logs + table client_errors + notif ops
+// throttlée. PUBLIC (le crash peut précéder l'auth), rate-limité par IP
+// dans le router. Cf. versions-app/src/lib/crashReporter.js.
+app.use('/api/client-error', require('./api/_client_error'));
+
 // ─── Plugin DAW — Phase 2.A ───────────────────────────────────────
 // POST /api/plugin/feedback  → metering + question → réponse Claude
 // GET  /api/plugin/ping      → healthcheck (pas gated)
