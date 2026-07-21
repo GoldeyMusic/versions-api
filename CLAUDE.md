@@ -38,10 +38,15 @@ selon la route :
 | `/api/internal`      | `X-Notify-Secret`                 | Webhooks Supabase DB (signup, deletion, feedback) |
 | `/api/newsletter`    | `X-Admin-Secret` (ou `?secret=`)  | Newsletter mensuelle |
 | `/api/welcome-email` | `X-Admin-Secret` (ou `?secret=`)  | Mail de bienvenue abonné (envoi manuel + preview) |
+| `/api/stats`         | `?token=` vs `STATS_TOKEN`        | Stats publiques plugin (dashboard Archipel) |
 
 Le router `/api/billing` doit être monté **avant** `express.json()`
 global parce que `/billing/webhook` a besoin du raw body pour la
 signature Stripe (`express.raw()` attaché dans le router lui-même).
+
+Le router `/api/stats` est monté **avant le CORS global** parce que
+le dashboard Archipel (`archipelaudio.com`) n'est pas dans
+`ALLOWED_ORIGINS` — le router gère son propre CORS.
 
 Le rate-limit (`lib/rateLimit.js`) est appliqué **après** `requireAuth`
 pour cibler par `user.id` (et non par IP). Fallback IP-based via
@@ -175,6 +180,7 @@ Critiques :
 - `RESEND_API_KEY`
 - `INTERNAL_NOTIFY_SECRET` (header X-Notify-Secret webhooks Supabase)
 - `ADMIN_SECRET` (newsletter — fail-closed si absent)
+- `STATS_TOKEN` (stats plugin — fail-closed si absent, query param `?token=`)
 - `DELETION_TOKEN_SECRET` (HMAC tokens suppression compte)
 
 Optionnelles :
@@ -184,6 +190,18 @@ Optionnelles :
 - `MONETIZATION_ENABLED` (toggle débit côté pipeline analyze)
 
 ## Livré récemment
+
+**2026-07-21** :
+- **Stats publiques plugin** (`api/_stats.js`, mount dans `server.js`).
+  `GET /api/stats/downloads?token=XXX` — renvoie total téléchargements,
+  inscrits (`auth.users` via GoTrue admin API), breakdown 7j/30j, et
+  daily 90 jours (`plugin_downloads`). Auth par token statique `STATS_TOKEN`
+  (fail-closed 403). CORS pour `archipelaudio.com` (router monté avant
+  le CORS global). `Cache-Control: max-age=300`. Consommé par le cockpit
+  Archipel (`server/audiopass-mail/admin.py`, section Vue d'ensemble).
+  **À configurer** : ajouter `STATS_TOKEN` sur Railway (générer un token
+  aléatoire, puis reporter la même valeur dans le `.env` du serveur
+  Archipel comme `VERSIONS_STATS_TOKEN`).
 
 **2026-07-14** :
 - **Mail de bienvenue abonné** (`lib/welcomeSubscriber.js` + `api/_welcome.js`).

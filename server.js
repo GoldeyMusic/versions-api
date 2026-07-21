@@ -23,6 +23,13 @@ const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
+// ─── Stats publiques plugin (dashboard Archipel fondateurs) ──────
+// Monté AVANT le CORS global : le dashboard archipelaudio.com n'est
+// pas dans ALLOWED_ORIGINS, le router gère son propre CORS + auth
+// par token statique (env STATS_TOKEN). Pas de express.json() requis
+// (GET only).
+app.use('/api/stats', require('./api/_stats'));
+
 // ─── CORS — whitelist explicite ───────────────────────────────────
 // Liste des origines autorisées en prod. Tout le reste est rejeté.
 // Permet aussi l'absence d'Origin (curl, scripts serveur-à-serveur,
