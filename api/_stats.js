@@ -17,11 +17,15 @@
  * Cache :
  *   Cache-Control: public, max-age=300 (5 minutes).
  *
- * Données :
- *   - total téléchargements plugin (table plugin_downloads)
- *   - téléchargements 7 / 30 derniers jours
- *   - breakdown quotidien des 90 derniers jours
- *   - total inscrits (auth.users via GoTrue admin API)
+ * Données (le champ JSON `total` reste nommé `total` pour compat cockpit) :
+ *   - installations UNIQUES du plugin (RPC plugin_install_stats) : un couple
+ *     (email, plateforme) daté à sa 1re occurrence. Les ré-installs et les
+ *     mises à jour (même email+plateforme) ne comptent qu'une fois ; le
+ *     multi-plateforme (Mac + PC) compte deux installs ; l'équipe interne
+ *     (STATS_EXCLUDE_EMAILS) est exclue de tous les totaux.
+ *   - installs uniques 7 / 30 derniers jours (par date de 1re install)
+ *   - breakdown quotidien des 90 derniers jours (installs, somme == total)
+ *   - total inscrits (auth.users via GoTrue admin API, header x-total-count)
  */
 
 const express = require('express');
@@ -36,6 +40,15 @@ const STATS_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:3000',
 ];
+
+// ─── Emails internes (équipe) exclus des installs uniques ────────
+// Surchargeable via STATS_EXCLUDE_EMAILS (CSV). Défaut = fondateurs, pour
+// que l'exclusion fonctionne sans variable d'env à configurer sur Railway.
+const STATS_EXCLUDE_EMAILS = (process.env.STATS_EXCLUDE_EMAILS
+  ? process.env.STATS_EXCLUDE_EMAILS.split(',')
+  : ['berdugo.david@gmail.com', 'davidabakan@gmail.com'])
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
 
 router.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -73,41 +86,17 @@ router.get('/downloads', async (req, res) => {
       { auth: { persistSession: false, autoRefreshToken: false } },
     );
 
-    const now = new Date();
-    const isoAgo = (n) => {
-      const d = new Date(now);
-      d.setDate(d.getDate() - n);
-      return d.toISOString();
-    };
+    // Installs uniques (RPC — dédup email+plateforme, équipe exclue) et
+    // total inscrits, en parallèle.
+    const [rpcRes, usersTotal] = await Promise.all([
+      sb.rpc('plugin_install_stats', { exclude_emails: STATS_EXCLUDE_EMAILS }),
 
-    // Toutes les queries en parallèle
-    const [totalRes, last7Res, last30Res, dailyRes, usersTotal] = await Promise.all([
-      // Total downloads (count only, no data)
-      sb.from('plugin_downloads').select('id', { count: 'exact', head: true }),
-
-      // Last 7 days
-      sb.from('plugin_downloads')
-        .select('id', { count: 'exact', head: true })
-        .gte('created_at', isoAgo(7)),
-
-      // Last 30 days
-      sb.from('plugin_downloads')
-        .select('id', { count: 'exact', head: true })
-        .gte('created_at', isoAgo(30)),
-
-      // Daily breakdown — on ramène les timestamps bruts (90 jours max
-      // = quelques centaines de lignes au pire, acceptable).
-      sb.from('plugin_downloads')
-        .select('created_at')
-        .gte('created_at', isoAgo(90))
-        .order('created_at', { ascending: true }),
-
-      // Total inscrits via GoTrue admin API. ⚠️ Le nombre total est
-      // renvoyé dans le header HTTP `x-total-count`, PAS dans le body (qui
-      // ne contient que le tableau `users`). per_page=1 → on ne charge pas
-      // la liste, seul le header nous intéresse. (Ne pas passer par
-      // sb.auth.admin.listUsers : cette lib n'expose `total` que si un
-      // header Link de pagination est présent — piège silencieux.)
+      // Total inscrits via GoTrue admin API. ⚠️ Le nombre total est renvoyé
+      // dans le header HTTP `x-total-count`, PAS dans le body (qui ne
+      // contient que le tableau `users`). per_page=1 → on ne charge pas la
+      // liste, seul le header nous intéresse. (Ne pas passer par
+      // sb.auth.admin.listUsers : cette lib n'expose `total` que si un header
+      // Link de pagination est présent — piège silencieux.)
       fetch(`${process.env.SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=1`, {
         headers: {
           Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
@@ -116,29 +105,18 @@ router.get('/downloads', async (req, res) => {
       }).then((r) => Number(r.headers.get('x-total-count')) || 0),
     ]);
 
-    // ── Build daily map (90 jours, pré-rempli à 0) ──────────────
-    const dailyMap = {};
-    for (let i = 89; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      dailyMap[d.toISOString().slice(0, 10)] = 0;
+    if (rpcRes.error) {
+      console.error('[stats/downloads] rpc plugin_install_stats:', rpcRes.error.message);
     }
-    if (dailyRes.data) {
-      for (const row of dailyRes.data) {
-        const day = row.created_at.slice(0, 10);
-        if (dailyMap[day] !== undefined) dailyMap[day]++;
-      }
-    }
-
-    const daily = Object.entries(dailyMap).map(([date, count]) => ({ date, count }));
+    const s = rpcRes.data || {};
 
     res.set('Cache-Control', 'public, max-age=300');
     return res.json({
-      total: totalRes.count || 0,
+      total: s.total || 0,            // installations uniques (hors équipe)
       total_users: usersTotal,
-      last_7_days: last7Res.count || 0,
-      last_30_days: last30Res.count || 0,
-      daily,
+      last_7_days: s.last_7_days || 0,
+      last_30_days: s.last_30_days || 0,
+      daily: s.daily || [],
     });
   } catch (err) {
     console.error('[stats/downloads] error:', err && err.message);
