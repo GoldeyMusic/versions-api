@@ -96,6 +96,27 @@ function multerIfMultipart(uploadMiddleware) {
 const jobs = new Map();
 function makeJobId() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
+// ── Idempotence anti-double-débit sur /start (2026-07-22) ────────────────
+// Contexte : un bug front (remontage React relançant LoadingScreen) a fait
+// appeler /start DEUX fois pour un même upload → 2 crédits débités + 2×
+// Fadr/Claude payés pour UNE seule analyse. Le front est corrigé, mais on
+// ne veut JAMAIS que le débit dépende de la bonne tenue du navigateur
+// (bundle en cache, régression future, autre client). Garde SERVEUR,
+// autoritaire : si le même user relance le MÊME audio (hash identique)
+// dans une fenêtre courte, on renvoie le job déjà en cours SANS créer un
+// second job ni re-débiter. Registre en mémoire (process Railway unique,
+// même pattern que `jobs`) ; une fenêtre de 2 min couvre largement le
+// double-fire (~20 s observé) et ne bloque pas une ré-analyse volontaire
+// plus tardive (qui, de toute façon, tape le cache Gemini par audio_hash).
+const START_DEDUP_WINDOW_MS = 120_000;
+const recentStarts = new Map(); // `${userId}:${audioHash}` → { jobId, ts }
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of recentStarts) {
+    if (now - v.ts > START_DEDUP_WINDOW_MS) recentStarts.delete(k);
+  }
+}, START_DEDUP_WINDOW_MS).unref();
+
 // Refund le crédit débité au start si le pipeline a planté. Idempotent :
 // flip le flag creditDebited à false dans le jobs Map pour ne pas double-refund.
 // No-op si MONETIZATION_ENABLED=false ou si le crédit n'a jamais été débité.
@@ -209,8 +230,33 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
     }
   }
 
+  // ── Garde idempotence : même user + même audio dans la fenêtre courte ──
+  // On calcule le hash tôt, à partir du buffer déjà en mémoire (path
+  // multipart = le path actif du site). Si un /start identique est encore
+  // "chaud", on renvoie SON jobId et on s'arrête là : pas de 2ᵉ job, pas de
+  // 2ᵉ débit, pas de 2ᵉ pipeline Fadr/Claude. Pour les paths sans buffer
+  // (storagePath direct / plugin), dedupKey reste null → comportement
+  // inchangé (le plugin a sa propre dédup).
+  let dedupKey = null;
+  if (userIdEarly && req.file?.buffer) {
+    try {
+      const h = computeAudioHash(req.file.buffer);
+      dedupKey = `${userIdEarly}:${h}`;
+      const prior = recentStarts.get(dedupKey);
+      if (prior && (Date.now() - prior.ts) < START_DEDUP_WINDOW_MS) {
+        console.warn(`[analyze] /start dupliqué ignoré (anti-double-débit) user=${userIdEarly} → job ${prior.jobId}`);
+        return res.json({ jobId: prior.jobId, deduped: true });
+      }
+    } catch (e) {
+      console.warn('[analyze] dedup hash failed (on continue sans dédup):', e.message);
+    }
+  }
+
   const jobId = makeJobId();
   jobs.set(jobId, { status: 'pending', progress: 'Démarrage…', pct: 0, userId: userIdEarly, creditDebited: false });
+  // Enregistre ce start comme "chaud" AVANT le débit, pour qu'un doublon
+  // qui arriverait pendant l'upload du premier soit intercepté ici.
+  if (dedupKey) recentStarts.set(dedupKey, { jobId, ts: Date.now() });
   res.json({ jobId });
 
   // ── Débit immédiat du crédit (au start de l'analyse) ────────────

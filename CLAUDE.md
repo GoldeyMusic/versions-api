@@ -191,6 +191,26 @@ Optionnelles :
 
 ## Livré récemment
 
+**2026-07-22** :
+- **🔥 Idempotence serveur anti-double-débit sur `/start`** (`api/_analyze.js`).
+  Le fix front du 2026-07-21 (remontage React, cf. ci-dessous) N'A PAS suffi :
+  oliviermess@orange.fr, abonné le 2026-07-21 22:32 CEST (donc bundle rechargé
+  FRAIS via la redirection Stripe, postérieur au déploiement front de 18:59
+  CEST), a quand même été double-débité sur ses 3 analyses suivantes. Leçon :
+  ne JAMAIS faire dépendre le débit de la bonne tenue du navigateur. Garde
+  serveur autoritaire : `recentStarts` (Map module-scope, fenêtre 120 s,
+  clé `${userId}:${audioHash}`, purge périodique). Au `/start`, on calcule le
+  hash tôt depuis `req.file.buffer` (path multipart = path actif du site) ;
+  si un start identique est encore chaud, on renvoie SON `jobId` (`deduped:true`)
+  sans créer de 2ᵉ job, sans re-débiter, sans relancer Fadr/Claude. Paths sans
+  buffer (storagePath direct / plugin) : `dedupKey` null → comportement
+  inchangé (le plugin a sa propre dédup). Testé sur 5 cas (double-fire 20 s,
+  autre audio, ré-analyse >2 min, autre user, sans buffer). Fenêtre 120 s sûre :
+  bien au-dessus du double-fire (~20 s), et une ré-analyse identique tape de
+  toute façon le cache Gemini par `audio_hash`. **NB** : le fix front reste en
+  place (defense-in-depth) mais son efficacité réelle est incertaine — le
+  serveur est désormais la source de vérité anti-double-débit.
+
 **2026-07-21bis** :
 - **Télémétrie de crash front** (`api/_client_error.js`, mount dans `server.js`).
   `POST /api/client-error` PUBLIC (le crash peut précéder l'auth), rate-limité
@@ -206,6 +226,35 @@ Optionnelles :
   page blanche non diagnosticable chez verdoljose2 (Windows/Edge 150) sans lui
   demander de manipuler sa console. CSP inchangé (`connect-src` autorisait déjà
   le domaine Railway).
+- **🔥 DOUBLE DÉBIT sur CHAQUE analyse** (versions-app, root cause trouvée
+  2026-07-21). Symptôme DB : deux `credit_events.debit_analysis` avec des
+  `job_id` différents à ~20 s d'intervalle, deux entrées `analysis_cost_logs`
+  (Fadr + Claude payés 2×, ~0,55 € au lieu de 0,25 €), mais UNE seule version
+  persistée. Mécanique : `App.jsx` montait le wrapper centré du contenu de
+  façon CONDITIONNELLE (`showWelcomeTopbar ? <div>{renderContent()}</div> :
+  renderContent()`). La structure de l'arbre changeait donc à chaque bascule
+  d'écran → React démontait/remontait TOUT le contenu. Au premier résultat
+  partiel, `handleLoaded` bascule sur l'écran fiche ; comme l'analyse n'est pas
+  finie, la branche `case "fiche"` réaffiche `LoadingScreen` → nouveau montage
+  → son effet `[config]`, sans verrou, refaisait upload + `POST /start` → 2ᵉ
+  crédit. L'écart de ~20 s = la durée d'un upload. Deux corrections : (1)
+  wrapper TOUJOURS monté, neutralisé par `display: contents` (ne jamais
+  reconditionner ce wrapper) ; (2) verrou `inFlightRuns` au niveau module dans
+  `LoadingScreen.jsx`, clé = titre+version+empreinte fichier, libéré dans le
+  `finally` du run (une relance volontaire reste possible, le mode resume n'est
+  pas concerné). Impact mesuré avant fix : verdoljose2 7 analyses/7 en double
+  (14 crédits), serrurerie.rayan 2, chrisedenmusic 1.
+- **Auto-réparation du cache front** (versions-app) : le cache localStorage des
+  projets était rendu AVANT le fetch réseau et accepté sur un simple
+  `Array.isArray`. Un cache de forme invalide fait donc crasher le render →
+  page blanche, ET le crash empêche le refresh d'écraser le cache : la panne
+  s'auto-entretient et SURVIT AUX DÉPLOIEMENTS (le poison est dans le
+  navigateur). Trois protections : clé versionnée `versions_projects_cache_v2`
+  (invalide d'office tout cache ancien — c'est le levier "réparer à distance"),
+  validation de forme à la lecture, et purge des clés `versions_*` par
+  l'ErrorBoundary au premier crash (session Supabase préservée). Bumper le
+  suffixe de la clé est LE geste à refaire si un utilisateur se retrouve
+  bloqué en page blanche persistante.
 - **Express : cap upload 20 → 64 Mo** (`api/_plugin.js`). Une session 192 kHz
   produit ~23 Mo de WAV 16-bit stéréo pour 30 s → `file_too_large` systématique
   (cas verdoljose2 sous Cubase). Gemini reçoit le fichier via la File API, pas
