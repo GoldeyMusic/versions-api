@@ -46,6 +46,17 @@
  *   Champs OPTIONNELS côté cockpit : si l'appel Stripe échoue (clé absente,
  *   panne), on les OMET du JSON au lieu d'envoyer des zéros faux — les
  *   stats plugin existantes restent servies normalement.
+ *
+ * Annuaire unifié (vue utilisateurs de l'archipel — ajout 2026-07-29) :
+ *   - users_list : [{ email, name, created_at, premium }] de tous les
+ *     inscrits réels (équipe interne STATS_EXCLUDE_EMAILS exclue).
+ *     name = user_metadata Google OAuth (full_name/name), fallback
+ *     public.profiles.prenom (inscription email), null sinon.
+ *     premium = abonnement actif (user_credits.monthly_grant > 0).
+ *     AUCUNE autre donnée personnelle ne doit être ajoutée ici (accord
+ *     Abakan 2026-07-29 : email + name + created_at + premium, rien d'autre).
+ *   Champ OPTIONNEL, même logique fail-soft que les revenus : omis si
+ *   l'appel échoue, le reste du JSON continue de répondre.
  */
 
 const express = require('express');
@@ -159,6 +170,56 @@ async function computeSales30d() {
   return { eur: Math.round(netCents) / 100, count };
 }
 
+// ─── Annuaire unifié : liste des inscrits réels ──────────────────
+// Pagination GoTrue admin (même pattern que lib/newsletter.js) puis
+// enrichissement en 2 requêtes batch : prenom (profiles) + premium
+// (user_credits.monthly_grant > 0 = abo actif).
+async function fetchUsersList(sb) {
+  const users = [];
+  let page = 1;
+  const perPage = 200;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await sb.auth.admin.listUsers({ page, perPage });
+    if (error) throw new Error(`listUsers failed: ${error.message}`);
+    const batch = (data && data.users) || [];
+    for (const u of batch) {
+      if (!u || !u.id || !u.email) continue;
+      if (isInternalEmail(u.email)) continue;
+      users.push({
+        id: u.id,
+        email: u.email,
+        name: (u.user_metadata && (u.user_metadata.full_name || u.user_metadata.name)) || null,
+        created_at: u.created_at || null,
+      });
+    }
+    if (batch.length < perPage) break;
+    page += 1;
+    if (page > 50) break; // garde-fou
+  }
+
+  if (users.length === 0) return [];
+
+  const ids = users.map((u) => u.id);
+  const [profilesRes, subsRes] = await Promise.all([
+    sb.from('profiles').select('id, prenom').in('id', ids),
+    sb.from('user_credits').select('user_id').gt('monthly_grant', 0),
+  ]);
+  if (profilesRes.error) console.warn('[stats/downloads] profiles lookup:', profilesRes.error.message);
+  if (subsRes.error) console.warn('[stats/downloads] user_credits lookup:', subsRes.error.message);
+  const prenoms = new Map((profilesRes.data || []).map((p) => [p.id, p.prenom || null]));
+  const premiumIds = new Set((subsRes.data || []).map((r) => r.user_id));
+
+  // On ne renvoie QUE email / name / created_at / premium — pas d'id
+  // interne ni d'autre donnée personnelle (périmètre validé avec Abakan).
+  return users.map((u) => ({
+    email: u.email,
+    name: u.name || prenoms.get(u.id) || null,
+    created_at: u.created_at,
+    premium: premiumIds.has(u.id),
+  }));
+}
+
 // ─── GET /downloads ──────────────────────────────────────────────
 router.get('/downloads', async (req, res) => {
   try {
@@ -173,7 +234,7 @@ router.get('/downloads', async (req, res) => {
     // Stripe sont catchés individuellement : en cas d'échec on renvoie
     // null → champs omis du JSON (le cockpit affiche "en attente"),
     // sans casser les stats plugin.
-    const [rpcRes, usersTotal, mrrEur, sales30d] = await Promise.all([
+    const [rpcRes, usersTotal, mrrEur, sales30d, usersList] = await Promise.all([
       sb.rpc('plugin_install_stats', { exclude_emails: STATS_EXCLUDE_EMAILS }),
 
       // Total inscrits via GoTrue admin API. ⚠️ Le nombre total est renvoyé
@@ -198,6 +259,11 @@ router.get('/downloads', async (req, res) => {
         console.error('[stats/downloads] computeSales30d:', e && e.message);
         return null;
       }),
+
+      fetchUsersList(sb).catch((e) => {
+        console.error('[stats/downloads] fetchUsersList:', e && e.message);
+        return null;
+      }),
     ]);
 
     if (rpcRes.error) {
@@ -220,6 +286,9 @@ router.get('/downloads', async (req, res) => {
         sales_30d_eur: sales30d.eur,
         sales_30d_count: sales30d.count,
       } : {}),
+      // Annuaire unifié (inscrits réels, équipe exclue). Optionnel : omis
+      // si l'appel a échoué.
+      ...(Array.isArray(usersList) ? { users_list: usersList } : {}),
     });
   } catch (err) {
     console.error('[stats/downloads] error:', err && err.message);
