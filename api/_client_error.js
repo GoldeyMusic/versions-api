@@ -9,6 +9,10 @@
  *   2. table Supabase `client_errors` (migration 047) ;
  *   3. notif ops par email, throttlée à 1 par heure (anti-spam).
  *
+ * Filtre de bruit tiers (2026-08-27) : miroir du filtre front, cf. isNoise
+ * plus bas — les rapports venant de scripts injectés (webview in-app Meta,
+ * extensions navigateur) sont jetés avant la base et avant la notif.
+ *
  * Endpoint PUBLIC (pas d'auth : le crash peut précéder l'hydratation de la
  * session). Protections : rate-limit IP en mémoire (10/h), payload 8 kb,
  * champs tronqués côté serveur (défense contre un POST forgé).
@@ -40,13 +44,66 @@ setInterval(() => {
   for (const [ip, h] of hits) if (now - h.windowStart > WINDOW_MS) hits.delete(ip);
 }, WINDOW_MS).unref();
 
+// ─── Filtre de bruit tiers (2026-08-27) ───────────────────────────
+// Miroir de `src/lib/crashReporter.js` côté front. Pourquoi le dupliquer
+// ici alors que le front filtre déjà : le filtre front ne protège que les
+// visiteurs qui ont chargé le dernier bundle. Les bundles en cache
+// continuent d'envoyer le bruit pendant des jours après un déploiement, et
+// rien n'empêche un POST forgé. Ce filtre-ci est la ligne de défense
+// finale : ni ligne en base, ni notif ops.
+//
+// Motifs connus :
+//   - webview in-app Meta (pubs Instagram) : pont JS↔Java détruit au swipe
+//     de fermeture → "Error invoking postMessage: Java object is gone",
+//     stack `iabjs://navigation_performance_logger_android` ;
+//   - scripts injectés par WebKit (`webkit-masked-url://hidden/`) :
+//     extension Safari ou WKUserScript, WebKit masque l'URL réelle. Vu le
+//     2026-08-26 avec "undefined is not an object (evaluating 'e.useCache')"
+//     — `useCache` est un interne React 18, notre bundle est en React 19 ;
+//   - extensions Chrome/Firefox, erreurs cross-origin anonymisées.
+//
+// Un vrai crash de notre bundle a une stack qui pointe `/assets/*.js` et
+// passe ce filtre sans encombre.
+const NOISE_MESSAGES = [
+  /java object is gone/i,            // pont JS↔Java WebView détruit
+  /error invoking postmessage/i,     // idem, formulation Meta
+  /^(uncaught )?script error\.?$/i,  // cross-origin, aucune info
+  /resizeobserver loop/i,            // bruit navigateur classique, inoffensif
+  /instantsearchsdkjsbridge/i,       // navigateur in-app Bing / Edge
+  /vue is not defined|ucbrowser/i,   // navigateurs in-app exotiques
+];
+
+const NOISE_STACK = [
+  /iabjs:\/\//i,                     // in-app browser Instagram / Facebook
+  /fbjs:\/\//i,
+  /navigation_performance_logger/i,
+  /chrome-extension:\/\//i,          // extensions navigateur
+  /moz-extension:\/\//i,
+  /safari-(web-)?extension:\/\//i,
+  /webkit-masked-url:/i,             // script injecté (extension Safari / WKUserScript)
+  /anonymous scripts?/i,
+];
+
+function isNoise(message, stack) {
+  const m = String(message || '');
+  const s = String(stack || '');
+  if (NOISE_MESSAGES.some((re) => re.test(m))) return true;
+  if (NOISE_STACK.some((re) => re.test(s))) return true;
+  return false;
+}
+
+// On ne logge pas une ligne Railway par hit de bruit (ça remplacerait un
+// spam par un autre) : compteur + résumé 1× par heure, histoire de garder
+// une trace si le filtre se met à manger de vrais crashs.
+let noiseCount = 0;
+let lastNoiseLogMs = 0;
+
 // ─── Throttle notif ops : 1 email max par heure ───────────────────
 let lastNotifyMs = 0;
 
 router.post('/', express.json({ limit: '8kb' }), async (req, res) => {
   try {
     const ip = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
-    if (!allow(ip)) return res.status(429).json({ ok: false });
 
     const b = req.body || {};
     const row = {
@@ -59,6 +116,21 @@ router.post('/', express.json({ limit: '8kb' }), async (req, res) => {
       email: String(b.email || '').slice(0, 200) || null,
       ip: ip.slice(0, 60) || null,
     };
+
+    // 0. Bruit tiers : sortie immédiate, AVANT le rate-limit IP — sinon le
+    //    bruit consomme les 10 rapports/h d'un utilisateur qui plante vraiment.
+    if (isNoise(row.message, row.stack)) {
+      noiseCount += 1;
+      const nowNoise = Date.now();
+      if (nowNoise - lastNoiseLogMs > WINDOW_MS) {
+        lastNoiseLogMs = nowNoise;
+        console.log(`[client-error] bruit tiers ignoré (${noiseCount} depuis le dernier résumé) · dernier: ${row.message.slice(0, 120)}`);
+        noiseCount = 0;
+      }
+      return res.json({ ok: true, ignored: 'noise' });
+    }
+
+    if (!allow(ip)) return res.status(429).json({ ok: false });
 
     // 1. Railway logs — diagnostic immédiat au grep.
     console.error(`[client-error] ${row.email || row.user_id || ip} · ${row.path} · ${row.ua.slice(0, 80)}\n  ${row.message}\n  ${row.stack.split('\n').slice(0, 4).join('\n  ')}`);
