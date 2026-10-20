@@ -5,7 +5,8 @@
  *   GET /api/stats/downloads?token=XXX
  *
  * Auth :
- *   Query param `token` comparé à process.env.STATS_TOKEN.
+ *   Query param `token` OU header `Authorization: Bearer <token>`,
+ *   comparé à process.env.STATS_TOKEN.
  *   Fail-closed si STATS_TOKEN non configuré (403).
  *
  * CORS :
@@ -53,8 +54,19 @@
  *     name = user_metadata Google OAuth (full_name/name), fallback
  *     public.profiles.prenom (inscription email), null sinon.
  *     premium = abonnement actif (user_credits.monthly_grant > 0).
- *     AUCUNE autre donnée personnelle ne doit être ajoutée ici (accord
- *     Abakan 2026-07-29 : email + name + created_at + premium, rien d'autre).
+ *     Périmètre initial (accord Abakan 2026-07-29) : email + name +
+ *     created_at + premium. Étendu le 2026-10-20 (mémo Archipel
+ *     « consentement emails ») aux champs nécessaires à la série
+ *     « nouvelles d'Archipel Audio », et à rien d'autre :
+ *       archipel_basis ('soft_optin' | 'optin' | null),
+ *       archipel_basis_at, archipel_text_version, archipel_optout_at,
+ *       email_verified (email confirmé côté Supabase Auth),
+ *       locale ('fr' | 'en' | null).
+ *     Source : table public.archipel_consent (migration 052). Comptes sans
+ *     ligne = aucune base (null partout). L'opposition l'emporte toujours :
+ *     c'est au consommateur d'exclure toute ligne avec archipel_optout_at.
+ *     Si la table est indisponible, les champs archipel_* sont null et le
+ *     reste de la liste est servi.
  *   Champ OPTIONNEL, même logique fail-soft que les revenus : omis si
  *   l'appel échoue, le reste du JSON continue de répondre.
  */
@@ -87,7 +99,7 @@ router.use((req, res, next) => {
   if (origin && STATS_ORIGINS.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
@@ -100,7 +112,8 @@ function requireStatsToken(req, res, next) {
     console.error('[stats] STATS_TOKEN not configured on server');
     return res.status(403).json({ error: 'stats_token_not_configured' });
   }
-  const got = req.query.token;
+  const auth = req.headers.authorization || '';
+  const got = req.query.token || (auth.startsWith('Bearer ') ? auth.slice(7).trim() : '');
   if (!got || got !== want) {
     return res.status(403).json({ error: 'forbidden' });
   }
@@ -191,6 +204,8 @@ async function fetchUsersList(sb) {
         email: u.email,
         name: (u.user_metadata && (u.user_metadata.full_name || u.user_metadata.name)) || null,
         created_at: u.created_at || null,
+        email_verified: !!(u.email_confirmed_at || u.confirmed_at),
+        meta_locale: (u.user_metadata && u.user_metadata.locale) || null,
       });
     }
     if (batch.length < perPage) break;
@@ -201,23 +216,38 @@ async function fetchUsersList(sb) {
   if (users.length === 0) return [];
 
   const ids = users.map((u) => u.id);
-  const [profilesRes, subsRes] = await Promise.all([
+  const [profilesRes, subsRes, consentRes] = await Promise.all([
     sb.from('profiles').select('id, prenom').in('id', ids),
     sb.from('user_credits').select('user_id').gt('monthly_grant', 0),
+    sb.from('archipel_consent').select(
+      'user_id, archipel_basis, archipel_basis_at, archipel_text_version, archipel_optout_at, locale',
+    ),
   ]);
   if (profilesRes.error) console.warn('[stats/downloads] profiles lookup:', profilesRes.error.message);
   if (subsRes.error) console.warn('[stats/downloads] user_credits lookup:', subsRes.error.message);
+  if (consentRes.error) console.warn('[stats/downloads] archipel_consent lookup:', consentRes.error.message);
   const prenoms = new Map((profilesRes.data || []).map((p) => [p.id, p.prenom || null]));
   const premiumIds = new Set((subsRes.data || []).map((r) => r.user_id));
+  const consents = new Map((consentRes.data || []).map((c) => [c.user_id, c]));
+  const normLocale = (l) => (l === 'fr' || l === 'en' ? l : null);
 
-  // On ne renvoie QUE email / name / created_at / premium — pas d'id
-  // interne ni d'autre donnée personnelle (périmètre validé avec Abakan).
-  return users.map((u) => ({
-    email: u.email,
-    name: u.name || prenoms.get(u.id) || null,
-    created_at: u.created_at,
-    premium: premiumIds.has(u.id),
-  }));
+  // On ne renvoie QUE le périmètre validé (cf. en-tête) — pas d'id
+  // interne ni d'autre donnée personnelle.
+  return users.map((u) => {
+    const c = consents.get(u.id) || null;
+    return {
+      email: u.email,
+      name: u.name || prenoms.get(u.id) || null,
+      created_at: u.created_at,
+      premium: premiumIds.has(u.id),
+      archipel_basis: (c && c.archipel_basis) || null,
+      archipel_basis_at: (c && c.archipel_basis_at) || null,
+      archipel_text_version: (c && c.archipel_text_version) || null,
+      archipel_optout_at: (c && c.archipel_optout_at) || null,
+      email_verified: u.email_verified,
+      locale: normLocale(u.meta_locale) || normLocale(c && c.locale),
+    };
+  });
 }
 
 // ─── GET /downloads ──────────────────────────────────────────────

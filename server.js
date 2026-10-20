@@ -98,6 +98,11 @@ app.use('/api/welcome-email', require('./api/_welcome'));
 // dans le router. Cf. versions-app/src/lib/crashReporter.js.
 app.use('/api/client-error', require('./api/_client_error'));
 
+// ─── Archipel Audio — désinscription centrale (serveur à serveur) ─
+// POST /api/archipel/optout { email }, Bearer ARCHIPEL_OPTOUT_TOKEN
+// (fallback STATS_TOKEN). Auth gérée dans le router. Cf. migration 052.
+app.use('/api/archipel', require('./api/_archipel'));
+
 // ─── Plugin DAW — Phase 2.A ───────────────────────────────────────
 // POST /api/plugin/feedback  → metering + question → réponse Claude
 // GET  /api/plugin/ping      → healthcheck (pas gated)
