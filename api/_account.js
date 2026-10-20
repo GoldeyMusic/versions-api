@@ -2,6 +2,8 @@
  * api/_account.js — endpoints user-facing pour la gestion du compte.
  *
  * Routes :
+ *   POST /api/account/welcome           → Bearer JWT user, mail de bienvenue
+ *                                          (une seule fois, nouveaux comptes).
  *   POST /api/account/request-deletion  → Bearer JWT user, envoie un mail
  *                                          de confirmation avec un lien signé.
  *   POST /api/account/confirm-deletion  → token signé en body, supprime le
@@ -27,6 +29,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { requireAuth } = require('../lib/auth');
 const { notifyOps, renderOpsEmail, stripeUrl } = require('../lib/notifyOps');
 const { signDeletionToken, verifyDeletionToken } = require('../lib/deletionToken');
+const { archipelFooterLine } = require('../lib/emailFooter');
 
 const router = express.Router();
 
@@ -141,6 +144,7 @@ ${ctaHtml}
           <td style="padding:24px 40px 32px;border-top:1px solid #ececef;background:#fafafa">
             <p style="margin:0;font-size:12px;color:#7a7686;line-height:1.5">${ftr}</p>
             <p style="margin:12px 0 0;font-size:11px;color:#9a96a4">${tagFooter} · <a href="https://versions.studio" style="color:#9a96a4;text-decoration:underline">versions.studio</a></p>
+            ${archipelFooterLine(isEn ? 'en' : 'fr', '#9a96a4')}
           </td>
         </tr>
       </table>
@@ -279,4 +283,58 @@ router.post('/confirm-deletion', express.json({ limit: '4kb' }), async (req, res
   }
 });
 
+// ─── POST /welcome ─────────────────────────────────────────────────
+//
+// Mail de bienvenue à tout nouvel inscrit, email ou Google (ajout
+// 2026-10-20). Appelé par le front au SIGNED_IN (useAuth → sendWelcomeOnce).
+//
+// Garde-fous :
+//   - idempotent : app_metadata.welcome_sent_at (non modifiable par le
+//     user) est posé AVANT l'envoi ;
+//   - jamais envoyé à un compte créé il y a plus de 48 h → les comptes
+//     existants au moment de la mise en ligne ne le reçoivent pas ;
+//   - jamais envoyé à une adresse non confirmée.
+// Locale : body.locale (langue active dans l'app) > user_metadata.locale > fr.
+const WELCOME_MAX_AGE_MS = 48 * 3600 * 1000;
+
+router.post('/welcome', requireAuth, express.json({ limit: '4kb' }), async (req, res) => {
+  try {
+    const admin = getAdminClient();
+    const { data, error } = await admin.auth.admin.getUserById(req.user.id);
+    if (error || !data?.user) return res.status(404).json({ error: 'user_not_found' });
+    const u = data.user;
+
+    if (u.app_metadata?.welcome_sent_at) return res.json({ sent: false, reason: 'already_sent' });
+    if (!u.email || !(u.email_confirmed_at || u.confirmed_at)) {
+      return res.json({ sent: false, reason: 'email_not_confirmed' });
+    }
+    const age = Date.now() - new Date(u.created_at).getTime();
+    if (!(age >= 0 && age <= WELCOME_MAX_AGE_MS)) return res.json({ sent: false, reason: 'not_new' });
+
+    const { error: upErr } = await admin.auth.admin.updateUserById(u.id, {
+      app_metadata: { ...(u.app_metadata || {}), welcome_sent_at: new Date().toISOString() },
+    });
+    if (upErr) {
+      console.error('[account/welcome] flag update failed:', upErr.message);
+      return res.status(500).json({ error: 'flag_failed' });
+    }
+
+    const bodyLocale = req.body && req.body.locale;
+    const locale = bodyLocale === 'en' || bodyLocale === 'fr'
+      ? bodyLocale
+      : (u.user_metadata?.locale === 'en' ? 'en' : 'fr');
+    const { buildSignupWelcomeEmail } = require('../lib/lifecycleEmails');
+    const { subject, html } = buildSignupWelcomeEmail({ locale });
+    await sendUserEmail({ to: u.email, subject, html, locale });
+    console.log(`[account/welcome] sent → ${u.email} (${locale})`);
+    res.json({ sent: true });
+  } catch (err) {
+    console.error('[account/welcome] failed:', err.message);
+    res.status(500).json({ error: 'welcome_failed' });
+  }
+});
+
 module.exports = router;
+module.exports.renderUserEmail = renderUserEmail;
+module.exports.sendUserEmail = sendUserEmail;
+module.exports.getAdminClient = getAdminClient;

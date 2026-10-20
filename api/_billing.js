@@ -33,6 +33,7 @@ const { getStripe } = require('../lib/stripe');
 const { applyCreditDelta, purgeSubscriptionBalance } = require('../lib/credits');
 const { notifyOps, renderOpsEmail, stripeUrl } = require('../lib/notifyOps');
 const { sendSubscriberWelcome } = require('../lib/welcomeSubscriber');
+const { sendCancelConfirmEmail } = require('../lib/lifecycleEmails');
 
 const router = express.Router();
 
@@ -424,6 +425,10 @@ async function handleStripeEvent(event, stripe) {
         footerLink: stripeUrl({ livemode, kind: 'subscriptions', id: sub.id }),
       }),
     });
+
+    // Confirmation de résiliation à l'abonné (ajout 2026-10-20) : date de
+    // fin + sort des crédits. Ne throw jamais (cf. lib/lifecycleEmails.js).
+    await sendCancelConfirmEmail({ userId, email: customerEmail, planKey, endTs });
     return;
   }
 
