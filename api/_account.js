@@ -296,8 +296,17 @@ router.post('/confirm-deletion', express.json({ limit: '4kb' }), async (req, res
 //   - jamais envoyé à une adresse non confirmée.
 // Locale : body.locale (langue active dans l'app) > user_metadata.locale > fr.
 const WELCOME_MAX_AGE_MS = 48 * 3600 * 1000;
+// Verrou en mémoire (Railway = un seul process) : deux onglets qui
+// détectent la connexion au même instant envoyaient chacun leur requête,
+// et les deux lisaient le flag avant que la première ne l'ait posé →
+// mail reçu en double (constaté 2026-10-20). La 2e requête concurrente
+// est désormais ignorée ; les suivantes voient le flag.
+const welcomeInFlight = new Set();
 
 router.post('/welcome', requireAuth, express.json({ limit: '4kb' }), async (req, res) => {
+  const uid = req.user.id;
+  if (welcomeInFlight.has(uid)) return res.json({ sent: false, reason: 'in_progress' });
+  welcomeInFlight.add(uid);
   try {
     const admin = getAdminClient();
     const { data, error } = await admin.auth.admin.getUserById(req.user.id);
@@ -331,6 +340,8 @@ router.post('/welcome', requireAuth, express.json({ limit: '4kb' }), async (req,
   } catch (err) {
     console.error('[account/welcome] failed:', err.message);
     res.status(500).json({ error: 'welcome_failed' });
+  } finally {
+    welcomeInFlight.delete(uid);
   }
 });
 
