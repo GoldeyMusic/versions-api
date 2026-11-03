@@ -353,7 +353,7 @@ router.get('/ping', (req, res) => {
 });
 
 const multerExpress = require('multer');
-const { analyzeListening: analyzeListeningExpress } = require('../lib/gemini');
+const { analyzeListening: analyzeListeningExpress, reportGeminiFailure } = require('../lib/gemini');
 // Limite upload : 64 Mo (2026-07-21, était 20 Mo). Le plugin capture au
 // sample rate de la SESSION en WAV 16-bit : une session 192 kHz produit
 // ~23 Mo pour 30 s stéréo → file_too_large systématique avec l'ancien cap
@@ -457,6 +457,9 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
     return res.json({ success: true, reply });
   } catch (err) {
     console.error('[plugin/express] error:', err && err.message);
+    if (!(err && err.__reported)) {
+      reportGeminiFailure(`[plugin/express] ${err && err.message}`, err && err.stack, null);
+    }
     // Écoute échouée → rembourse l'écoute consommée (jamais débiter sur échec)
     if (quotaConsumed) await callPluginQuotaRpc('plugin_express_refund', userTokenExpress);
     return res.status(500).json({ error: 'internal_error' });
