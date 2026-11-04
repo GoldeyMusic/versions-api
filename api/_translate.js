@@ -28,6 +28,7 @@ const FICHE_RULES = `Tu traduis une fiche d'analyse musicale produite par une IA
 À NE JAMAIS TOUCHER :
 - Les clés JSON (elements, items, plan, elements_detectes, globalScore, verdict, summary, tips, cat, icon, id, p, task, daw, metered, target, linkedItemIds, score, label, detail, tools, …). Ce sont des identifiants de code.
 - Le champ "icon" : doit rester exactement "voice", "synths", "bass", "drums", "fx", "lufs".
+- Le champ "nature" : doit rester exactement "artistic" ou "technical" (identifiant de code, jamais traduit).
 - Le champ "id" : doit rester exactement sa valeur d'origine ("voice-1", "bass-2", …).
 - Les clés dans "elements_detectes" : doivent rester exactement "voix", "drums", "basses", "instruments", "spatial" (identifiants de code).
 - Tous les types non-textuels : nombres (score, globalScore, duration_seconds…), booléens, null, tableaux vides.
