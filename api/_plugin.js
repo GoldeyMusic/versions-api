@@ -369,13 +369,19 @@ const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), li
 // handlers définis plus haut dans le fichier.
 // Ligne de relance en fin de verdict express (pont plugin → site).
 // Ton = celui du site (tutoiement, concret, pas de jargon), 1 à 2 phrases.
+// NB : le plugin (PluginProcessor.cpp, callback express) ajoute LUI-MÊME
+// une ligne générique « -> Pour l'analyse COMPLÈTE (...) : bouton "Aller
+// plus loin sur versions.studio" » après la réponse. Cette ligne-ci doit
+// donc rester complémentaire (solde + ce qu'on obtient), sans répéter le
+// bouton ni l'URL. À la prochaine release plugin, retirer la ligne C++ et
+// remettre l'URL ici.
 function expressSiteNudge(credits) {
   const site = process.env.VERSIONS_SITE_URL || 'https://versions.studio';
   if (credits >= 1) {
     const n = credits === 1 ? '1 analyse complète' : `${credits} analyses complètes`;
-    return `→ Pour la fiche complète de ce mix (note sur 100, verdict de sortie, plan d'action élément par élément), importe-le sur ${site} — il te reste ${n}.`;
+    return `→ Il te reste ${n} : importe ce mix pour la note sur 100, le verdict de sortie et le plan d'action élément par élément.`;
   }
-  return `→ Pour la fiche complète de ce mix (note sur 100, verdict de sortie, plan d'action), les analyses sont sur ${site}/pricing — à partir de 6,99 €/mois.`;
+  return `→ Ton solde d'analyses complètes est à 0 : recharge sur ${site}/pricing (à partir de 6,99 €/mois).`;
 }
 
 async function callPluginQuotaRpc(fn, userToken) {
