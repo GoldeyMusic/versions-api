@@ -185,6 +185,15 @@ function notifyListeningOutage(err, { userId, jobId }) {
   }
 }
 
+// ── Timings pipeline (instrumentation 2026-11-06) ───────────────
+// Stocke la durée de chaque étape dans job.timings (ms). Lu à la fin par
+// logAnalysisCost → colonne analysis_cost_logs.timings (migration 058).
+function markTiming(jobId, key, ms) {
+  const j = jobs.get(jobId);
+  if (!j) return;
+  jobs.set(jobId, { ...j, timings: { ...(j.timings || {}), [key]: Math.round(ms) } });
+}
+
 async function refundCreditIfDebited(jobId, errorMessage) {
   if (!MONETIZATION_ENABLED) return;
   const j = jobs.get(jobId);
@@ -318,7 +327,7 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
   }
 
   const jobId = makeJobId();
-  jobs.set(jobId, { status: 'pending', progress: 'Démarrage…', pct: 0, userId: userIdEarly, creditDebited: false });
+  jobs.set(jobId, { status: 'pending', progress: 'Démarrage…', pct: 0, userId: userIdEarly, creditDebited: false, startedAt: Date.now() });
   // Enregistre ce start comme "chaud" AVANT le débit, pour qu'un doublon
   // qui arriverait pendant l'upload du premier soit intercepté ici.
   if (dedupKey) recentStarts.set(dedupKey, { jobId, ts: Date.now() });
@@ -596,6 +605,7 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
             return null;
           });
         jobs.set(jobId, {
+          ...(jobs.get(jobId) || {}),
           status: 'pending', stage: 'started',
           progress: 'Récupération de l\'analyse…', pct: 50,
           meta: { title, artist, daw, mode, version },
@@ -707,6 +717,7 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
           .then((task) => {
             const data = extractFadrData(task);
             console.log(`[analyze] fadr done in ${((Date.now() - t0) / 1000).toFixed(1)}s — bpm:${data.bpm} key:${data.key} lufs:${data.lufs} stems:${(data.stems || []).length}`);
+            markTiming(jobId, 'fadr_ms', Date.now() - t0);
             return data;
           })
           .catch((err) => {
@@ -786,7 +797,12 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
       }
 
       const meta = { title, artist, daw, mode, version };
+      // Spread OBLIGATOIRE : sans lui, userId / creditDebited / startedAt
+      // posés au /start étaient perdus → refundCreditIfDebited ne
+      // remboursait jamais un échec survenu après ce point (bug corrigé
+      // 2026-11-06 avec l'instrumentation).
       jobs.set(jobId, {
+        ...(jobs.get(jobId) || {}),
         status: 'pending', stage: 'started',
         progress: 'Préparation de l\'écoute…', pct: 10,
         meta,
@@ -802,9 +818,11 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
       // ops par email (throttle 1/h, cf. notifyListeningOutage).
       let listening = null;
       if (fileBuffer) {
+        const tListen = Date.now();
         listening = await listenOrThrow({
           fileBuffer, fileMime, title, artist, mode, userId, jobId,
         });
+        markTiming(jobId, 'listening_ms', Date.now() - tListen);
         console.log('[analyze] listening done');
       }
       const cur1 = jobs.get(jobId) || {};
@@ -830,8 +848,10 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
       // ── STAGE 2: RAG PureMix context ───────────
       let pmChunks = [];
       if (listening) {
+        const tRag = Date.now();
         try {
           pmChunks = await retrievePureMixContext(listening);
+          markTiming(jobId, 'rag_ms', Date.now() - tRag);
           console.log(`[analyze] rag: ${pmChunks.length} chunks retrieved`);
         } catch (err) {
           console.error('[analyze] rag error:', err.message);
@@ -1046,8 +1066,10 @@ async function runDiagnosticPhase(jobId, ctx) {
   } : null;
 
   let fiche = null;
+  const tFiche = Date.now();
   try {
     fiche = await generateFiche(mode, daw, title || 'Titre inconnu', artist, listening, pmContext, previousFiche, intent || null, previousCompletions || null, mergedMetrics, declaredGenre || null, !!genreUnknown, uploadType || 'mix');
+    markTiming(jobId, 'fiche_ms', Date.now() - tFiche);
     if (fiche && durationSeconds) fiche.duration_seconds = durationSeconds;
     console.log('[analyze] claude done — keys:', Object.keys(fiche || {}).join(', '));
   } catch (err) {
@@ -1065,6 +1087,7 @@ async function runDiagnosticPhase(jobId, ctx) {
     previousAnalysisResult.fiche &&
     previousAnalysisResult.listening;
   if (canCompare) {
+    const tEvo = Date.now();
     try {
       evolution = await generateEvolution(
         { fiche: previousAnalysisResult.fiche, listening: previousAnalysisResult.listening },
@@ -1072,6 +1095,7 @@ async function runDiagnosticPhase(jobId, ctx) {
         intent || previousAnalysisResult.intent_used || null,
         locale || 'fr',
       );
+      markTiming(jobId, 'evolution_ms', Date.now() - tEvo);
       if (evolution) console.log('[analyze] evolution done — dominante:', evolution.dominante);
       else console.log('[analyze] evolution skipped (null result)');
     } catch (err) {
@@ -1178,6 +1202,9 @@ async function runDiagnosticPhase(jobId, ctx) {
   // et y ajoute les forfaits Fadr/infra (cf. lib/costTracker.js).
   // Try/catch isolé : une erreur DB ne doit JAMAIS casser une analyse réussie.
   try {
+    const jEnd = jobs.get(jobId) || {};
+    const timings = { ...(jEnd.timings || {}) };
+    if (jEnd.startedAt) timings.total_ms = Date.now() - jEnd.startedAt;
     await logAnalysisCost({
       userId: userId || null,
       jobId,
@@ -1185,6 +1212,7 @@ async function runDiagnosticPhase(jobId, ctx) {
       geminiUsage: geminiLib.getUsage(),
       claudeUsage: claudeLib.getUsage(),
       fadrCalled: !!fadrMetrics,
+      timings,
     });
   } catch (err) {
     console.error('[analyze] cost tracking error (non-fatal):', err.message);

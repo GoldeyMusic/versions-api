@@ -192,6 +192,14 @@ Optionnelles :
 ## Livré récemment
 
 **2026-11-06** :
+- **Timings pipeline (instrumentation)** : `markTiming(jobId, key, ms)` dans
+  `api/_analyze.js` (fadr_ms, listening_ms, rag_ms, fiche_ms, evolution_ms)
+  + `startedAt` posé au /start → `total_ms` ; `logAnalysisCost({ timings })`
+  écrit `analysis_cost_logs.timings` (jsonb, migration 058 versions-app —
+  à appliquer AVANT de déployer, sinon l'insert coût échoue, non fatal).
+  Bug corrigé au passage : les `jobs.set` de démarrage du pipeline
+  remplaçaient le job sans spread → `userId`/`creditDebited` perdus →
+  `refundCreditIfDebited` ne remboursait jamais un échec après ce point.
 - **Écoute Gemini BLOQUANTE** (`api/_analyze.js`, helper `listenOrThrow` +
   `notifyListeningOutage`). Avant : échec Gemini → `listening = null`, fiche
   générée sans écoute ni RAG, crédit débité, aucune alerte (panne 402 "prepayment
