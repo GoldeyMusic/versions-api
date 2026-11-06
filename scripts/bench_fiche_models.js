@@ -12,7 +12,8 @@
  *   node scripts/bench_fiche_models.js --models claude-sonnet-4-6,claude-sonnet-5-5,claude-opus-5-5 --limit 10
  *   node scripts/bench_fiche_models.js --models claude-sonnet-5-5 --versions <uuid>,<uuid>
  *   node scripts/bench_fiche_models.js --models claude-opus-5-5 --limit 10 --email berdugo.david@gmail.com
- *   Options : --no-rag (sans extraits PureMix), --out scripts/bench_out
+ *   Options : --no-rag (sans extraits PureMix), --out scripts/bench_out,
+ *             --thinking between_tools|adaptive et --effort low|medium|high (modèles 5.x)
  *
  * Env requis : ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
  *              SUPABASE_ANON_KEY + OPENAI_API_KEY (RAG ; absents → RAG ignoré).
@@ -43,6 +44,9 @@ const EMAIL = args.email ? String(args.email).trim().toLowerCase() : null;
 const USE_RAG = !args['no-rag'] && !!process.env.OPENAI_API_KEY && !!process.env.SUPABASE_ANON_KEY;
 if (!args['no-rag'] && !USE_RAG) console.warn('RAG désactivé : il faut OPENAI_API_KEY et SUPABASE_ANON_KEY dans .env.bench');
 const OUT_DIR = ensureDir(path.resolve(args.out || path.join(__dirname, 'bench_out')));
+// Réglages 5.x (cf. lib/claude.js requestTuning) : --thinking between_tools|adaptive, --effort low|medium|high
+if (args.thinking) process.env.CLAUDE_5_THINKING = String(args.thinking);
+if (args.effort) process.env.CLAUDE_5_EFFORT = String(args.effort);
 
 for (const k of ['ANTHROPIC_API_KEY', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']) {
   if (!process.env[k]) { console.error(`Manque ${k} (env ou .env.bench)`); process.exit(1); }
@@ -138,7 +142,16 @@ async function runOne(v, model) {
   let fiche = null, err = null;
   try {
     fiche = await claude.generateFiche(mode, daw, title, '', listening, pmContext, null, intent, null, mergedMetrics(ar), declaredGenre, genreUnknown, uploadType);
-  } catch (e) { err = e.message; }
+  } catch (e) {
+    err = e.message;
+    // JSON invalide : on garde la réponse brute dans bench_out/raw_* pour diagnostiquer
+    if (e.raw) {
+      const safe = `${v.id.slice(0, 8)}_${model}`.replace(/[^a-z0-9_-]/gi, '_');
+      const rawPath = path.join(OUT_DIR, `raw_${safe}.txt`);
+      fs.writeFileSync(rawPath, `stop_reason: ${e.stopReason}\nerror: ${e.message}\n\n===== RAW =====\n${e.raw}\n\n===== EXTRACTED =====\n${e.extracted || ''}`);
+      err += ` (brut : ${path.relative(process.cwd(), rawPath)})`;
+    }
+  }
   const ms = Date.now() - t0;
   const usage = claude.getUsage();
   const cost = computeCosts({ claudeUsage: usage, fadrCalled: false, geminiUsage: {} });
@@ -172,7 +185,7 @@ function fmtRow(cells) { return `| ${cells.join(' | ')} |`; }
   fs.writeFileSync(jsonPath, JSON.stringify({ models: MODELS, useRag: USE_RAG, results }, null, 2));
 
   const lines = [];
-  lines.push(`# Banc d'essai fiche — ${ts}`, '', `Modèles : ${MODELS.join(', ')} · RAG : ${USE_RAG ? 'oui' : 'non'} · ${results.length} titres`, '');
+  lines.push(`# Banc d'essai fiche — ${ts}`, '', `Modèles : ${MODELS.join(', ')} · RAG : ${USE_RAG ? 'oui' : 'non'} · ${results.length} titres · 5.x : thinking=${process.env.CLAUDE_5_THINKING || 'between_tools'}, effort=${process.env.CLAUDE_5_EFFORT || 'medium'}`, '');
   lines.push('## Scores globaux', '');
   lines.push(fmtRow(['Titre', 'Réf. en base', ...MODELS]));
   lines.push(fmtRow(['---', '---', ...MODELS.map(() => '---')]));
