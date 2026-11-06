@@ -192,6 +192,19 @@ Optionnelles :
 ## Livré récemment
 
 **2026-11-06** :
+- **Charte par esthétique (D.1)** : `lib/genreRules.js` — 14 familles
+  (rétro/soul, lo-fi/boom-bap, trap, club, ambient, indie rock, metal, folk,
+  jazz/classique, country, latin, pop maximaliste, reggae/dub, néo-soul),
+  chacune avec « CRAFT (ne pas pénaliser) » + « NE JAMAIS reprocher » +
+  cibles loudness du genre ; 5 règles de scoring (élément aligné et propre
+  → ≥ 85, item = suggestion artistic/low ; cibles loudness du genre, pas
+  -14 LUFS ; vrais défauts restent des défauts). Injectée dans `genreBlock`
+  (genre déclaré → familles reconnues par mots-clés, sinon charte entière ;
+  genre à inférer → charte entière). `mechanicalCaps` reçoit
+  `genreFamilies` : cap LRA neutralisé pour club/metal/trap/pop maximaliste,
+  cap voix masquée neutralisé pour indie rock/ambient/club. Bench :
+  `--genre "..."` force le genre déclaré (`scripts/bench_fiche_models.js`).
+  D.2 (classifieur de genre à l'écoute) toujours à faire.
 - **Stems exploités (basse / drums / instrus)** : `lib/dsp.js::measureStem`
   mesure désormais, par type de stem, des bandes ciblées + un RMS large
   bande de référence (`rmsWide`) : bass 20-60 / 60-150 Hz, drums 60-150 /

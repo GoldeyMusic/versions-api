@@ -13,7 +13,8 @@
  *   node scripts/bench_fiche_models.js --models claude-sonnet-5-5 --versions <uuid>,<uuid>
  *   node scripts/bench_fiche_models.js --models claude-opus-5-5 --limit 10 --email berdugo.david@gmail.com
  *   Options : --no-rag (sans extraits PureMix), --out scripts/bench_out,
- *             --thinking between_tools|adaptive et --effort low|medium|high (modèles 5.x)
+ *             --thinking between_tools|adaptive et --effort low|medium|high (modèles 5.x),
+ *             --genre "pop ballad rétro" (force le genre déclaré, test charte D.1)
  *
  * Env requis : ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
  *              SUPABASE_ANON_KEY + OPENAI_API_KEY (RAG ; absents → RAG ignoré).
@@ -47,6 +48,9 @@ const OUT_DIR = ensureDir(path.resolve(args.out || path.join(__dirname, 'bench_o
 // Réglages 5.x (cf. lib/claude.js requestTuning) : --thinking between_tools|adaptive, --effort low|medium|high
 if (args.thinking) process.env.CLAUDE_5_THINKING = String(args.thinking);
 if (args.effort) process.env.CLAUDE_5_EFFORT = String(args.effort);
+// --genre "pop ballad rétro" : force le genre déclaré sur toutes les versions
+// rejouées (test de la charte par esthétique, lib/genreRules.js).
+const FORCE_GENRE = args.genre ? String(args.genre).trim() : null;
 
 for (const k of ['ANTHROPIC_API_KEY', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']) {
   if (!process.env[k]) { console.error(`Manque ${k} (env ou .env.bench)`); process.exit(1); }
@@ -126,7 +130,7 @@ async function runOne(v, model) {
   const daw = ar.fiche?.daw || 'Logic Pro';
   const mode = ar.fiche?.mode === 'ref' ? 'ref' : 'diag';
   const intent = v.version_intent || v.tracks?.artistic_intent || ar.intent_used || null;
-  const declaredGenre = v.declared_genre || null;
+  const declaredGenre = FORCE_GENRE || v.declared_genre || null;
   const genreUnknown = !declaredGenre;
   const uploadType = v.upload_type || 'mix';
   let pmContext = '';
