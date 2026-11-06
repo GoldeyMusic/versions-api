@@ -79,6 +79,10 @@ app.use('/api/account', require('./api/_account'));
 // l'auth se fait via shared secret (cron externe, pas un user authentifié).
 app.use('/api/newsletter', require('./api/_newsletter'));
 
+// POST /api/lifecycle/run → emails d'activation (J+2, J+7, V2), un passage
+// par jour via cron externe. Gated X-Admin-Secret (cf. _lifecycle.js).
+app.use('/api/lifecycle', require('./api/_lifecycle'));
+
 // ─── Annonce one-shot : sortie du plugin DAW ──────────────────────
 // POST /api/announce-plugin/send    → envoie l'annonce (dry=1, only=...)
 // GET  /api/announce-plugin/preview → preview HTML

@@ -208,6 +208,16 @@ Optionnelles :
   des analyses en base, plusieurs modèles, rapport .md/.json dans
   `scripts/bench_out/`) et `scripts/bench_listening_models.js` (écoute Gemini
   Flash vs Pro sur un dossier audio). Clés dans `.env.bench` (gitignoré).
+- **Emails d'activation** (`lib/lifecycleRunner.js`, `lib/lifecycleEmails.js`,
+  `api/_lifecycle.js`, mount `/api/lifecycle`). 3 mails, un seul envoi par
+  user (table `lifecycle_emails_sent`, migration 056 versions-app) :
+  `activation_j2` (≥ 2 j, aucune analyse ni express), `example_j7` (≥ 7 j,
+  et J2 envoyé depuis ≥ 5 j), `v2_nudge` (1re fiche ≥ 3 j, aucun titre à
+  2 versions, solde ≥ 1). Plafond 20/passage, priorité v2 > j2 > j7.
+  `POST /api/lifecycle/run?dry=1` pour voir le plan ; `/test?kind=&to=`
+  pour un envoi réel vers soi ; `/preview?kind=` pour le HTML. Cron externe
+  quotidien à configurer (10h Paris). Opt-out = `markOptOut(userId)` (insère
+  les 3 kinds) sur demande mail.
 - **Banc d'essai modèles fiche (10 titres, PureMix actif)** : Sonnet 4.6
   écart 3,3 pts / 51 s / 0,077 € · **Sonnet 5.5 écart 2,6 pts / 16 s /
   0,057 € → retenu** · Opus 5.5 écart 2,3 pts / 41 s / 0,149 €, 6-10 items
