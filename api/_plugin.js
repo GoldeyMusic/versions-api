@@ -367,6 +367,17 @@ const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), li
 // l'écoute express ET le chat. Renvoie null si pas de token ou si la RPC échoue
 // (mode dégradé : on ne bloque pas). Déclaration hoistée → utilisable depuis les
 // handlers définis plus haut dans le fichier.
+// Ligne de relance en fin de verdict express (pont plugin → site).
+// Ton = celui du site (tutoiement, concret, pas de jargon), 1 à 2 phrases.
+function expressSiteNudge(credits) {
+  const site = process.env.VERSIONS_SITE_URL || 'https://versions.studio';
+  if (credits >= 1) {
+    const n = credits === 1 ? '1 analyse complète' : `${credits} analyses complètes`;
+    return `→ Pour la fiche complète de ce mix (note sur 100, verdict de sortie, plan d'action élément par élément), importe-le sur ${site} — il te reste ${n}.`;
+  }
+  return `→ Pour la fiche complète de ce mix (note sur 100, verdict de sortie, plan d'action), les analyses sont sur ${site}/pricing — à partir de 6,99 €/mois.`;
+}
+
 async function callPluginQuotaRpc(fn, userToken) {
   if (!userToken) return null;
   try {
@@ -453,7 +464,27 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
     } else if (listening && Array.isArray(listening.points_forts) && listening.points_forts.length) {
       parts.push('Points forts : ' + listening.points_forts.slice(0, 3).join(' ; '));
     }
-    const reply = parts.join('\n\n') || 'Ecoute effectuee.';
+    let reply = parts.join('\n\n') || 'Ecoute effectuee.';
+
+    // ── Pont plugin → site (audit 2026-11-06, niveau A : backend seul) ──
+    // L'express donne la réponse courte ; la fiche complète vit sur le
+    // site. Sur un bus master (ou sans info de piste), on termine par une
+    // relance personnalisée : solde d'analyses restant, ou lien tarifs.
+    // Jamais sur une piste isolée (l'analyse complète attend un mix).
+    // Best-effort : toute erreur ici n'altère pas le verdict.
+    try {
+      const isMaster = !channelType || /master|mix bus|music bus/i.test(String(channelType));
+      if (isMaster) {
+        const account = await callPluginQuotaRpc('plugin_get_account', userTokenExpress);
+        const credits = Number(account?.credits);
+        if (Number.isFinite(credits)) {
+          reply += '\n\n' + expressSiteNudge(credits);
+        }
+      }
+    } catch (e) {
+      console.warn('[plugin/express] nudge skipped:', e && e.message);
+    }
+
     return res.json({ success: true, reply });
   } catch (err) {
     console.error('[plugin/express] error:', err && err.message);

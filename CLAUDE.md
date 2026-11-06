@@ -192,6 +192,12 @@ Optionnelles :
 ## Livré récemment
 
 **2026-11-06** :
+- **Pont plugin → site, niveau A** (`api/_plugin.js`, `expressSiteNudge`) :
+  après une écoute express sur un bus master (ou sans `channelType`), le
+  verdict se termine par une relance personnalisée (solde lu via
+  `plugin_get_account` : « il te reste N analyses complètes » ou lien
+  `/pricing` si 0). Jamais sur une piste isolée. Best-effort. Niveau B
+  (bouton + solde dans le plugin) = release plugin, non fait.
 - **Timings pipeline (instrumentation)** : `markTiming(jobId, key, ms)` dans
   `api/_analyze.js` (fadr_ms, listening_ms, rag_ms, fiche_ms, evolution_ms)
   + `startedAt` posé au /start → `total_ms` ; `logAnalysisCost({ timings })`
