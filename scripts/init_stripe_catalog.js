@@ -30,18 +30,23 @@
 const Stripe = require('stripe');
 
 // ─── Catalogue à synchroniser avec versions-app/src/constants/plans.js ───
+// Grille 2026-11-06 (audit) : Solo 6,99 €/4 analyses, Pack Projet 6 analyses
+// 14,99 € (remplace Pack 5 — à archiver dans Stripe, cf. archive_legacy_packs.js).
+// Pack 1 conservé comme « une analyse de plus », plus en vitrine.
 const PACKS = [
-  { key: 'pack_1',  name: 'Versions — 1 analyse',   price_eur: 4.99,   credits: 1 },
-  { key: 'pack_5',  name: 'Versions — 5 analyses',  price_eur: 19.99,  credits: 5 },
+  { key: 'pack_1',  name: 'Versions — 1 analyse',           price_eur: 4.99,   credits: 1 },
+  { key: 'pack_6',  name: 'Versions — Pack Projet (6)',     price_eur: 14.99,  credits: 6 },
 ];
 const SUBSCRIPTIONS = [
+  { key: 'sub_solo',  name: 'Versions — Abo Solo',  price_eur: 6.99,  credits: 4 },
   { key: 'sub_indie', name: 'Versions — Abo Indie', price_eur: 14.99, credits: 12 },
   { key: 'sub_pro',   name: 'Versions — Abo Pro',   price_eur: 29.99, credits: 30 },
 ];
 
 const KEY_TO_ENV = {
   pack_1:    'VITE_STRIPE_PRICE_PACK_1',
-  pack_5:    'VITE_STRIPE_PRICE_PACK_5',
+  pack_6:    'VITE_STRIPE_PRICE_PACK_6',
+  sub_solo:  'VITE_STRIPE_PRICE_SUB_SOLO',
   sub_indie: 'VITE_STRIPE_PRICE_SUB_INDIE',
   sub_pro:   'VITE_STRIPE_PRICE_SUB_PRO',
 };
@@ -60,8 +65,16 @@ const KEY_TO_ENV = {
 
   const envLines = [];
 
+  // --only pack_6,sub_solo : ne crée QUE ces plans (les prices ne sont pas
+  // idempotents : relancer le script sans --only créerait des doublons de
+  // prix pour pack_1 / sub_indie / sub_pro déjà en prod).
+  const onlyArg = process.argv.find((a) => a.startsWith('--only='));
+  const only = onlyArg ? new Set(onlyArg.slice(7).split(',').map((x) => x.trim()).filter(Boolean)) : null;
+  const wanted = (plan) => !only || only.has(plan.key);
+  if (only) console.log(`→ Seulement : ${[...only].join(', ')}\n`);
+
   // ── Packs ────
-  for (const p of PACKS) {
+  for (const p of PACKS.filter(wanted)) {
     const product = await getOrCreateProduct(stripe, p);
     const price = await stripe.prices.create({
       product: product.id,
@@ -78,7 +91,7 @@ const KEY_TO_ENV = {
   }
 
   // ── Abos ────
-  for (const sub of SUBSCRIPTIONS) {
+  for (const sub of SUBSCRIPTIONS.filter(wanted)) {
     const product = await getOrCreateProduct(stripe, sub);
     const price = await stripe.prices.create({
       product: product.id,

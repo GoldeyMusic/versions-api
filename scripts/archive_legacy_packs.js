@@ -27,7 +27,8 @@
 
 const Stripe = require('stripe');
 
-const LEGACY_PACK_KEYS = ['pack_10', 'pack_25', 'pack_50'];
+// pack_5 ajouté le 2026-11-06 : remplacé par pack_6 (Pack Projet 14,99 €).
+const LEGACY_PACK_KEYS = ['pack_10', 'pack_25', 'pack_50', 'pack_5'];
 
 (async () => {
   const key = process.env.STRIPE_SECRET_KEY;

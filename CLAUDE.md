@@ -208,6 +208,26 @@ Optionnelles :
   des analyses en base, plusieurs modèles, rapport .md/.json dans
   `scripts/bench_out/`) et `scripts/bench_listening_models.js` (écoute Gemini
   Flash vs Pro sur un dossier audio). Clés dans `.env.bench` (gitignoré).
+- **Grille tarifaire 2026-11-06** (audit, section Pricing) :
+  - Catalogue : `sub_solo` 6,99 €/4 analyses (nouveau), `sub_indie` 14,99/12
+    (recommandé), `sub_pro` 29,99/30 ; `pack_6` « Pack Projet » 14,99 €/6
+    (remplace `pack_5`, archivé via `scripts/archive_legacy_packs.js`),
+    `pack_1` conservé en secondaire. Création des prix :
+    `node scripts/init_stripe_catalog.js --only=pack_6,sub_solo` (sans
+    `--only` le script recrée des doublons de prix). Env Vercel :
+    `VITE_STRIPE_PRICE_PACK_6`, `VITE_STRIPE_PRICE_SUB_SOLO`.
+  - **Résiliation → crédits de grâce 90 j** (migration 057 versions-app) :
+    `customer.subscription.deleted` appelle `convertSubscriptionToGrace`
+    (RPC `convert_subscription_to_grace`) au lieu de purger. Colonnes
+    `user_credits.grace_balance` / `grace_expires_at`, débit ordonné abo →
+    grâce → pack, cron pg_cron `expire-grace-credits` (04:10 UTC) qui
+    journalise `grace_expired`. `purgeSubscriptionBalance` reste dispo.
+  - **Pause / reprise** : `GET /api/billing/subscription` (statut Stripe),
+    `POST /pause-subscription` (pause_collection 'void'), `POST
+    /resume-subscription`. Aucun mouvement DB : plus de invoice.paid →
+    `plugin_is_subscriber()` retombe en gratuit 2 j après `monthly_renews_at`,
+    la reprise relance tout via invoice.paid. Webhook `subscription.updated`
+    notifie ops sur transition `pause_collection`. UI : ReglagesScreen.
 - **Emails d'activation** (`lib/lifecycleRunner.js`, `lib/lifecycleEmails.js`,
   `api/_lifecycle.js`, mount `/api/lifecycle`). 3 mails, un seul envoi par
   user (table `lifecycle_emails_sent`, migration 056 versions-app) :

@@ -30,7 +30,7 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const { getStripe } = require('../lib/stripe');
-const { applyCreditDelta, purgeSubscriptionBalance } = require('../lib/credits');
+const { applyCreditDelta, purgeSubscriptionBalance, convertSubscriptionToGrace } = require('../lib/credits');
 const { notifyOps, renderOpsEmail, stripeUrl } = require('../lib/notifyOps');
 const { sendSubscriberWelcome } = require('../lib/welcomeSubscriber');
 const { sendCancelConfirmEmail } = require('../lib/lifecycleEmails');
@@ -231,6 +231,122 @@ router.post('/cancel-subscription', express.json({ limit: '1kb' }), async (req, 
   }
 });
 
+// ─── Abonnement : statut + pause / reprise (tarifs 2026-11-06) ───────
+//
+// Helper commun : résout l'abo Stripe de l'utilisateur connecté.
+// Renvoie { res: <réponse déjà envoyée>, ... } ou { sub, subId, stripe }.
+async function resolveUserSubscription(req, res, tag) {
+  const user = await getAuthedUser(req);
+  if (!user) { res.status(401).json({ ok: false, error: 'unauthorized' }); return null; }
+  const sb = getSbServiceRole();
+  const { data: row, error: rowErr } = await sb
+    .from('user_credits')
+    .select('stripe_subscription_id, monthly_grant, grace_balance, grace_expires_at')
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if (rowErr) {
+    console.error(`[billing/${tag}] db lookup failed:`, rowErr.message);
+    res.status(500).json({ ok: false, reason: 'db_failed' });
+    return null;
+  }
+  const subId = row?.stripe_subscription_id || null;
+  if (!subId) {
+    res.json({ ok: true, active: false, reason: row?.monthly_grant > 0 ? 'missing_sub_id' : 'no_subscription', grace: graceInfo(row) });
+    return null;
+  }
+  let sub;
+  try {
+    sub = await getStripe().subscriptions.retrieve(subId);
+  } catch (err) {
+    console.error(`[billing/${tag}] stripe retrieve failed (sub ${subId}):`, err.message);
+    res.status(500).json({ ok: false, reason: 'stripe_failed' });
+    return null;
+  }
+  return { user, row, sub, subId, stripe: getStripe() };
+}
+
+function graceInfo(row) {
+  const bal = Number(row?.grace_balance || 0);
+  const exp = row?.grace_expires_at || null;
+  if (!bal || !exp || new Date(exp).getTime() <= Date.now()) return null;
+  return { balance: bal, expiresAt: exp };
+}
+
+function describeSubscription(sub, row) {
+  return {
+    ok: true,
+    active: sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due',
+    status: sub.status,
+    planKey: sub?.metadata?.plan_key || null,
+    paused: !!sub.pause_collection,
+    cancelAtPeriodEnd: sub.cancel_at_period_end === true,
+    periodEnd: sub.current_period_end || null,
+    cancelAt: sub.cancel_at || null,
+    grace: graceInfo(row),
+  };
+}
+
+// GET /api/billing/subscription → statut pour la modale Réglages.
+router.get('/subscription', async (req, res) => {
+  try {
+    const ctx = await resolveUserSubscription(req, res, 'subscription');
+    if (!ctx) return;
+    return res.json(describeSubscription(ctx.sub, ctx.row));
+  } catch (err) {
+    console.error('[billing/subscription] unexpected error:', err.message);
+    return res.status(500).json({ ok: false, error: 'unexpected' });
+  }
+});
+
+// POST /api/billing/pause-subscription → Stripe pause_collection 'void' :
+// plus de facture ni de crédits mensuels tant que l'abo est en pause,
+// crédits existants conservés. Idempotent.
+router.post('/pause-subscription', express.json({ limit: '1kb' }), async (req, res) => {
+  try {
+    const ctx = await resolveUserSubscription(req, res, 'pause-subscription');
+    if (!ctx) return;
+    const { sub, subId, stripe, row, user } = ctx;
+    if (sub.status === 'canceled') return res.json({ ok: false, reason: 'canceled' });
+    if (sub.pause_collection) return res.json({ ...describeSubscription(sub, row), alreadyPaused: true });
+    let updated;
+    try {
+      updated = await stripe.subscriptions.update(subId, { pause_collection: { behavior: 'void' } });
+    } catch (err) {
+      console.error(`[billing/pause-subscription] stripe update failed (sub ${subId}):`, err.message);
+      return res.status(500).json({ ok: false, reason: 'stripe_failed' });
+    }
+    console.log(`[billing/pause-subscription] user ${user.id} paused sub ${subId}`);
+    return res.json(describeSubscription(updated, row));
+  } catch (err) {
+    console.error('[billing/pause-subscription] unexpected error:', err.message);
+    return res.status(500).json({ ok: false, error: 'unexpected' });
+  }
+});
+
+// POST /api/billing/resume-subscription → lève la pause ; la facturation
+// reprend au prochain cycle (invoice.paid remettra grant + renews_at).
+router.post('/resume-subscription', express.json({ limit: '1kb' }), async (req, res) => {
+  try {
+    const ctx = await resolveUserSubscription(req, res, 'resume-subscription');
+    if (!ctx) return;
+    const { sub, subId, stripe, row, user } = ctx;
+    if (sub.status === 'canceled') return res.json({ ok: false, reason: 'canceled' });
+    if (!sub.pause_collection) return res.json({ ...describeSubscription(sub, row), alreadyActive: true });
+    let updated;
+    try {
+      updated = await stripe.subscriptions.update(subId, { pause_collection: '' });
+    } catch (err) {
+      console.error(`[billing/resume-subscription] stripe update failed (sub ${subId}):`, err.message);
+      return res.status(500).json({ ok: false, reason: 'stripe_failed' });
+    }
+    console.log(`[billing/resume-subscription] user ${user.id} resumed sub ${subId}`);
+    return res.json(describeSubscription(updated, row));
+  } catch (err) {
+    console.error('[billing/resume-subscription] unexpected error:', err.message);
+    return res.status(500).json({ ok: false, error: 'unexpected' });
+  }
+});
+
 // ─── POST /webhook — traite les events Stripe ─────────────────
 //
 // IMPORTANT : ce handler attend du raw body (express.raw) pour
@@ -302,11 +418,15 @@ async function handleStripeEvent(event, stripe) {
       console.warn('[billing/webhook] subscription.deleted without metadata.user_id, skip');
       return;
     }
-    // 1. Purge bucket sub (RPC). Logge un credit_event 'subscription_reset' négatif.
-    const purged = await purgeSubscriptionBalance({
+    // 1. Tarifs 2026-11-06 : le solde abo n'est plus purgé mais converti en
+    //    crédits de grâce valables 90 jours (RPC convert_subscription_to_grace,
+    //    migration 057). Ordre de débit : abo → grâce → pack. Le cron
+    //    expire-grace-credits journalise l'expiration.
+    const purged = await convertSubscriptionToGrace({
       userId,
+      graceDays: 90,
       stripeEventId: event.id,
-      notes: `Résiliation abo ${sub?.metadata?.plan_key || ''} (sub ${sub.id})`,
+      notes: `Résiliation abo ${sub?.metadata?.plan_key || ''} (sub ${sub.id}) : solde converti en grâce 90 j`,
     });
     // 2. Reset des méta abo sur user_credits.
     const sb = getSbServiceRole();
@@ -323,7 +443,7 @@ async function handleStripeEvent(event, stripe) {
       net_eur: 0,
       stripe_id: sub.id || null,
       stripe_event_id: event.id,
-      notes: `subscription deleted (${purged} sub credits purged)`,
+      notes: `subscription deleted (${purged} sub credits converted to 90-day grace)`,
     });
 
     // 4. Notif ops : récupère l'email client (sub.customer = ID string)
@@ -376,6 +496,43 @@ async function handleStripeEvent(event, stripe) {
     const justRequestedCancel = 'cancel_at_period_end' in prev
       && prev.cancel_at_period_end === false
       && sub.cancel_at_period_end === true;
+    // Pause / reprise (tarifs 2026-11-06) : transition de `pause_collection`.
+    // Aucun mouvement DB : Stripe cesse de facturer, les crédits restent
+    // utilisables, et plugin_is_subscriber() retombe seul en mode gratuit
+    // 2 jours après monthly_renews_at (plus de invoice.paid). La reprise
+    // relance la facturation → invoice.paid → grant + renews_at à jour.
+    if ('pause_collection' in prev) {
+      const nowPaused = !!sub.pause_collection;
+      const wasPaused = !!prev.pause_collection;
+      if (nowPaused !== wasPaused) {
+        const planKey = sub?.metadata?.plan_key || 'subscription';
+        const livemode = !!event.livemode;
+        let customerEmail = '—';
+        if (sub.customer && typeof sub.customer === 'string') {
+          try { customerEmail = (await stripe.customers.retrieve(sub.customer))?.email || '—'; } catch (_) { /* notif only */ }
+        }
+        const resumesTs = sub.pause_collection?.resumes_at || null;
+        await notifyOps({
+          subject: nowPaused ? `[Versions] Abo en pause · ${planKey}` : `[Versions] Abo repris · ${planKey}`,
+          html: renderOpsEmail({
+            title: nowPaused ? `Abonnement en pause · ${planKey}` : `Abonnement repris · ${planKey}`,
+            intro: nowPaused
+              ? `${customerEmail} a mis son abonnement ${planKey} en pause : plus de prélèvement ni de crédits mensuels jusqu'à la reprise, crédits existants conservés.`
+              : `${customerEmail} a repris son abonnement ${planKey} : la facturation redémarre au prochain cycle.`,
+            rows: [
+              { label: 'Client', value: customerEmail },
+              { label: 'Plan', value: planKey },
+              { label: 'Reprise prévue', value: resumesTs ? new Date(resumesTs * 1000).toISOString().slice(0, 10) : (nowPaused ? 'manuelle' : '—') },
+              { label: 'Subscription', value: sub.id, link: stripeUrl({ livemode, kind: 'subscriptions', id: sub.id }) },
+              { label: 'Mode', value: livemode ? 'live' : 'test' },
+            ],
+            footerLink: stripeUrl({ livemode, kind: 'subscriptions', id: sub.id }),
+          }),
+        });
+        return;
+      }
+    }
+
     if (!justRequestedCancel) {
       // Tout autre changement (plan, PM, etc.) → silencieux, on n'a pas de
       // logique métier dessus pour l'instant.
