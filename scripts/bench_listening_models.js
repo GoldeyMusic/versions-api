@@ -40,6 +40,8 @@ function describe(l) {
   const timecodes = (text.match(/\b\d{1,2}:\d{2}\b/g) || []).length;
   return {
     chant: l.contient_chant,
+    genre: l.genre_estime || '',
+    genre_indices: (l.genre_indices || '').slice(0, 160),
     points_forts: (l.points_forts || []).length,
     a_travailler: (l.a_travailler || []).length,
     categories: Object.keys(l.par_categorie || {}).length,
@@ -71,7 +73,7 @@ function describe(l) {
       const ms = Date.now() - t0;
       const usage = gemini.getUsage();
       const d = describe(listening);
-      console.log(`→ ${f} · ${model} : ${err ? 'ERREUR ' + err : `${(ms / 1000).toFixed(1)} s · chant=${d.chant} · ${d.points_forts} PF / ${d.a_travailler} AT · ${d.timecodes} timecodes · ${usage.totalTokenCount} tok`}`);
+      console.log(`→ ${f} · ${model} : ${err ? 'ERREUR ' + err : `${(ms / 1000).toFixed(1)} s · chant=${d.chant} · genre=${d.genre || '?'} · ${d.points_forts} PF / ${d.a_travailler} AT · ${d.timecodes} timecodes · ${usage.totalTokenCount} tok`}`);
       row.runs.push({ model, ms, usage, listening, err, d });
     }
     results.push(row);
@@ -79,10 +81,10 @@ function describe(l) {
   const ts = stamp();
   fs.writeFileSync(path.join(OUT_DIR, `listening_${ts}.json`), JSON.stringify({ models: MODELS, results }, null, 2));
   const lines = [`# Banc d'essai écoute — ${ts}`, '', `Modèles : ${MODELS.join(', ')} · ${results.length} fichiers`, ''];
-  lines.push(`| Fichier | Modèle | Durée (s) | Chant | Points forts | À travailler | Timecodes | Tokens |`);
-  lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- |`);
+  lines.push(`| Fichier | Modèle | Durée (s) | Chant | Genre | Points forts | À travailler | Timecodes | Tokens |`);
+  lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
   for (const r of results) for (const x of r.runs) {
-    lines.push(`| ${r.file} | ${x.model} | ${(x.ms / 1000).toFixed(1)} | ${x.err ? 'ERR' : x.d.chant} | ${x.err ? '' : x.d.points_forts} | ${x.err ? '' : x.d.a_travailler} | ${x.err ? '' : x.d.timecodes} | ${x.usage.totalTokenCount || ''} |`);
+    lines.push(`| ${r.file} | ${x.model} | ${(x.ms / 1000).toFixed(1)} | ${x.err ? 'ERR' : x.d.chant} | ${x.err ? '' : x.d.genre} | ${x.err ? '' : x.d.points_forts} | ${x.err ? '' : x.d.a_travailler} | ${x.err ? '' : x.d.timecodes} | ${x.usage.totalTokenCount || ''} |`);
   }
   lines.push('', '## Impressions (lecture qualitative)', '');
   for (const r of results) {

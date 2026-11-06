@@ -192,6 +192,21 @@ Optionnelles :
 ## Livré récemment
 
 **2026-11-06** :
+- **Genre à l'écoute (D.2)** : `lib/gemini.js` demande dans les deux
+  templates un `genre_estime` (vocabulaire contraint `GENRE_VOCAB` de
+  `lib/genreRules.js`, 68 labels tous rattachés à une famille) + des
+  `genre_indices`, et de juger points forts / à travailler avec les codes
+  de ce genre. `lib/claude.js` : quand rien n'est déclaré, cette estimation
+  est le POINT DE DEPART de `inferred_genre` (gardée sauf contradiction
+  flagrante) et seules les familles correspondantes sont injectées (prompt
+  court). Les écoutes en cache antérieures n'ont pas le champ → charte
+  complète comme avant. Nouvelle famille `rock_blues` ; regex des familles
+  sans frontière finale (« classique », « acoustique » matchent).
+  `bench_listening_models.js` affiche `genre=…` par fichier ;
+  `bench_listening_versions.js --versions <uuid,…>` rejoue l'écoute sur l'audio
+  stocké d'une version (option `skipCache` d'`analyzeListening` pour forcer
+  l'appel malgré le cache par hash). Test 2026-11-06 : Die With a Smile →
+  « pop ballade retro » (avant : « indie folk pop »), Le Freak → « disco ».
 - **Charte par esthétique (D.1)** : `lib/genreRules.js` — 14 familles
   (rétro/soul, lo-fi/boom-bap, trap, club, ambient, indie rock, metal, folk,
   jazz/classique, country, latin, pop maximaliste, reggae/dub, néo-soul),
