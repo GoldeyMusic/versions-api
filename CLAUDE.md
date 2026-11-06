@@ -192,6 +192,15 @@ Optionnelles :
 ## Livré récemment
 
 **2026-11-06** :
+- **Stems exploités (basse / drums / instrus)** : `lib/dsp.js::measureStem`
+  mesure désormais, par type de stem, des bandes ciblées + un RMS large
+  bande de référence (`rmsWide`) : bass 20-60 / 60-150 Hz, drums 60-150 /
+  8-12 kHz, other 2-4 kHz, tous 200-500 Hz (voix inchangée : 1-3 / 5-8 kHz).
+  `lib/claude.js` en déduit des « PROXYS PAR STEM » (sub vs fondamentale,
+  partage kick/basse 60-150, bas-médium chargé, dureté 2-4 kHz, air drums)
+  exprimés en relatif, avec la règle « un proxy seul ne fait pas un item :
+  l'écoute confirme ». Coût : +2 ffmpeg par stem en parallèle (~+1 s) —
+  surveiller `timings.fadr_ms`/`total_ms` dans /admin après déploiement.
 - **Pont plugin → site, niveau A** (`api/_plugin.js`, `expressSiteNudge`) :
   après une écoute express sur un bus master (ou sans `channelType`), le
   verdict se termine par une relance personnalisée (solde lu via
