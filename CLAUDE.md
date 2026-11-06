@@ -208,6 +208,15 @@ Optionnelles :
   des analyses en base, plusieurs modèles, rapport .md/.json dans
   `scripts/bench_out/`) et `scripts/bench_listening_models.js` (écoute Gemini
   Flash vs Pro sur un dossier audio). Clés dans `.env.bench` (gitignoré).
+- **Banc d'essai modèles fiche (10 titres, PureMix actif)** : Sonnet 4.6
+  écart 3,3 pts / 51 s / 0,077 € · **Sonnet 5.5 écart 2,6 pts / 16 s /
+  0,057 € → retenu** · Opus 5.5 écart 2,3 pts / 41 s / 0,149 €, 6-10 items
+  med par fiche (trop) → non retenu. Particularités 5.x câblées dans
+  `lib/claude.js::requestTuning` : pas de `temperature` (400), thinking
+  compté dans max_tokens → `between_tools` (Sonnet) / `adaptive` (Opus, qui
+  refuse between_tools) + budget élargi ; `responseText()` lit le premier
+  bloc `text` (les 5.x peuvent renvoyer des blocs thinking avant). Env :
+  `CLAUDE_5_THINKING`, `CLAUDE_5_EFFORT`. Bascule prod = `CLAUDE_FICHE_MODEL`.
 - **Prompt caching fiche : NON retenu** à ce volume. Mesuré sur juin→nov. :
   14 % des analyses arrivent < 5 min après la précédente (TTL 5 min, write
   ×1,25) et 43 % < 60 min (TTL 1 h, write ×2) → net négatif dans les deux
