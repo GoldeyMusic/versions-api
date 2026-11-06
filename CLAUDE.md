@@ -201,6 +201,18 @@ Optionnelles :
   crédit remboursé par `refundCreditIfDebited`, email ops throttlé 1/h avec
   diagnostic (402/quota vs autre). Front : `errorAnalysisListening` FR/EN +
   case dans `src/lib/backendErrors.js`. Cache Gemini par hash inchangé.
+- **Modèle fiche configurable** : env Railway `CLAUDE_FICHE_MODEL` (vide =
+  `claude-sonnet-4-6`), lu à chaque appel par `lib/claude.js::ficheModel()`.
+  `lib/costTracker.js` tarifie par modèle (`CLAUDE_RATES`, préfixe d'id).
+  Bancs d'essai : `scripts/bench_fiche_models.js` (rejoue generateFiche sur
+  des analyses en base, plusieurs modèles, rapport .md/.json dans
+  `scripts/bench_out/`) et `scripts/bench_listening_models.js` (écoute Gemini
+  Flash vs Pro sur un dossier audio). Clés dans `.env.bench` (gitignoré).
+- **Prompt caching fiche : NON retenu** à ce volume. Mesuré sur juin→nov. :
+  14 % des analyses arrivent < 5 min après la précédente (TTL 5 min, write
+  ×1,25) et 43 % < 60 min (TTL 1 h, write ×2) → net négatif dans les deux
+  cas. À reconsidérer au-delà de ~20 analyses/jour. Le chat garde son cache
+  (tours à quelques secondes d'écart).
 - Quick wins audit (versions-app) : routes publiques `/pricing` `/tarifs`
   `/plugin`, seed signup 2 crédits (migration 055 appliquée en prod),
   bandeau `NextVersionNudge` fin de V1, copy express 5 → 15.

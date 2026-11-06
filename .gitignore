@@ -7,3 +7,4 @@ node_modules/
 dist/
 .vercel/
 .claude/
+scripts/bench_out/
