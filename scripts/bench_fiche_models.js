@@ -15,7 +15,7 @@
  *   Options : --no-rag (sans extraits PureMix), --out scripts/bench_out
  *
  * Env requis : ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
- *              OPENAI_API_KEY (RAG ; absent → RAG ignoré).
+ *              SUPABASE_ANON_KEY + OPENAI_API_KEY (RAG ; absents → RAG ignoré).
  *
  * Sortie : scripts/bench_out/fiche_<timestamp>.md (tableau lisible) +
  *          fiche_<timestamp>.json (toutes les fiches, pour relecture).
@@ -39,7 +39,9 @@ const MODELS = String(args.models || 'claude-sonnet-4-6,claude-sonnet-5-5').spli
 const LIMIT = Math.max(1, Math.min(50, parseInt(args.limit || '10', 10) || 10));
 const VERSION_IDS = args.versions ? String(args.versions).split(',').map((v) => v.trim()).filter(Boolean) : null;
 const EMAIL = args.email ? String(args.email).trim().toLowerCase() : null;
-const USE_RAG = !args['no-rag'] && !!process.env.OPENAI_API_KEY;
+// Le RAG (lib/rag.js) lit SUPABASE_ANON_KEY (pas la service role) + OPENAI_API_KEY.
+const USE_RAG = !args['no-rag'] && !!process.env.OPENAI_API_KEY && !!process.env.SUPABASE_ANON_KEY;
+if (!args['no-rag'] && !USE_RAG) console.warn('RAG désactivé : il faut OPENAI_API_KEY et SUPABASE_ANON_KEY dans .env.bench');
 const OUT_DIR = ensureDir(path.resolve(args.out || path.join(__dirname, 'bench_out')));
 
 for (const k of ['ANTHROPIC_API_KEY', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']) {
