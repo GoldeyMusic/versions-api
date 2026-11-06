@@ -120,6 +120,71 @@ setInterval(() => {
 // Refund le crédit débité au start si le pipeline a planté. Idempotent :
 // flip le flag creditDebited à false dans le jobs Map pour ne pas double-refund.
 // No-op si MONETIZATION_ENABLED=false ou si le crédit n'a jamais été débité.
+// ─────────────────────────────────────────────────────────────
+// Écoute Gemini bloquante (audit 2026-11-05).
+//
+// analyzeListening() fait déjà ses retries internes (3 tentatives × liste de
+// modèles). Ici on ajoute UNE relance globale après 4 s (absorbe un 5xx ou un
+// timeout transitoire de la File API), puis on abandonne franchement : l'écoute
+// est la source primaire de la fiche, une fiche sans écoute n'a pas à être
+// facturée. L'erreur levée porte le préfixe `listening_unavailable:` que
+// lib/jobErrors classifie en `analysis_listening_unavailable`.
+//
+// Alerte ops : 1 email max par heure (process-local, comme _client_error.js),
+// la trace complète reste dans client_errors (source 'server:gemini', posée
+// par reportGeminiFailure dans lib/gemini.js) et dans les logs Railway.
+// ─────────────────────────────────────────────────────────────
+const LISTEN_RETRY_DELAY_MS = 4000;
+const LISTEN_ALERT_WINDOW_MS = 60 * 60 * 1000;
+let lastListeningAlertMs = 0;
+
+async function listenOrThrow({ fileBuffer, fileMime, title, artist, mode, userId, jobId }) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const listening = await analyzeListening(fileBuffer, fileMime, title || '', artist || '', mode, undefined, undefined, { userId });
+      if (listening) return listening;
+      lastErr = new Error('empty listening');
+    } catch (err) {
+      lastErr = err;
+    }
+    console.error(`[analyze] listening attempt ${attempt}/2 failed:`, lastErr && lastErr.message);
+    if (attempt < 2) await new Promise((r) => setTimeout(r, LISTEN_RETRY_DELAY_MS));
+  }
+  notifyListeningOutage(lastErr, { userId, jobId });
+  throw new Error(`listening_unavailable: ${lastErr && lastErr.message}`);
+}
+
+function notifyListeningOutage(err, { userId, jobId }) {
+  const now = Date.now();
+  if (now - lastListeningAlertMs < LISTEN_ALERT_WINDOW_MS) return;
+  lastListeningAlertMs = now;
+  const detail = String((err && err.message) || 'unknown').slice(0, 600);
+  const hint = /402|prepayment|depleted|billing|quota/i.test(detail)
+    ? 'Ressemble à un crédit prépayé AI Studio épuisé ou un quota : vérifier la facturation du projet Gemini.'
+    : 'Vérifier les logs Railway ([gemini]) et la table client_errors (source server:gemini).';
+  try {
+    const { notifyOps, renderOpsEmail } = require('../lib/notifyOps');
+    notifyOps({
+      subject: '[Versions] ALERTE écoute Gemini indisponible — analyses bloquées',
+      html: renderOpsEmail({
+        title: 'Écoute Gemini indisponible',
+        intro: 'Une analyse a été ARRÊTÉE et le crédit remboursé parce que l\'écoute Gemini a échoué deux fois de suite. Tant que ce n\'est pas réglé, toutes les analyses complètes échouent (throttle : 1 email/h).',
+        rows: [
+          { label: 'Erreur', value: detail },
+          { label: 'Diagnostic', value: hint },
+          { label: 'Job', value: jobId || '—' },
+          { label: 'User', value: userId || '—' },
+          { label: 'Quand', value: new Date(now).toISOString() },
+        ],
+      }),
+      text: `Écoute Gemini indisponible — analyse arrêtée, crédit remboursé.\n${detail}\n${hint}\nJob ${jobId || '—'} · user ${userId || '—'}`,
+    }).catch(() => {});
+  } catch (e) {
+    console.warn('[analyze] notifyListeningOutage failed:', e && e.message);
+  }
+}
+
 async function refundCreditIfDebited(jobId, errorMessage) {
   if (!MONETIZATION_ENABLED) return;
   const j = jobs.get(jobId);
@@ -728,15 +793,19 @@ router.post('/start', analyzeLimiter, multerIfMultipart(upload.single('file')), 
       });
 
       // ── STAGE 1: Gemini listening ──────────────
+      // ÉTAPE BLOQUANTE (audit 2026-11-05). Avant : en cas d'échec Gemini,
+      // `listening = null` et le pipeline continuait → fiche sans écoute ni
+      // RAG, crédit débité quand même, aucune alerte (panne 402 "prepayment
+      // credits depleted" invisible 10 jours début novembre). Désormais :
+      // 1 relance après 4 s, puis throw → le catch global classifie en
+      // `analysis_listening_unavailable`, rembourse le crédit, et on alerte
+      // ops par email (throttle 1/h, cf. notifyListeningOutage).
       let listening = null;
       if (fileBuffer) {
-        try {
-          listening = await analyzeListening(fileBuffer, fileMime, title || '', artist || '', mode, undefined, undefined, { userId });
-          console.log('[analyze] listening done');
-        } catch (err) {
-          console.error('[analyze] listening error:', err.message);
-          listening = null;
-        }
+        listening = await listenOrThrow({
+          fileBuffer, fileMime, title, artist, mode, userId, jobId,
+        });
+        console.log('[analyze] listening done');
       }
       const cur1 = jobs.get(jobId) || {};
       jobs.set(jobId, {

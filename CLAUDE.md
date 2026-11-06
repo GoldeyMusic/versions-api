@@ -191,7 +191,38 @@ Optionnelles :
 
 ## Livré récemment
 
+**2026-11-06** :
+- **Écoute Gemini BLOQUANTE** (`api/_analyze.js`, helper `listenOrThrow` +
+  `notifyListeningOutage`). Avant : échec Gemini → `listening = null`, fiche
+  générée sans écoute ni RAG, crédit débité, aucune alerte (panne 402 "prepayment
+  credits depleted" invisible 10 jours début nov.). Maintenant : 1 relance
+  après 4 s, puis throw `listening_unavailable:` → catch global → job
+  `status:error` code `analysis_listening_unavailable` (`lib/jobErrors.js`),
+  crédit remboursé par `refundCreditIfDebited`, email ops throttlé 1/h avec
+  diagnostic (402/quota vs autre). Front : `errorAnalysisListening` FR/EN +
+  case dans `src/lib/backendErrors.js`. Cache Gemini par hash inchangé.
+- Quick wins audit (versions-app) : routes publiques `/pricing` `/tarifs`
+  `/plugin`, seed signup 2 crédits (migration 055 appliquée en prod),
+  bandeau `NextVersionNudge` fin de V1, copy express 5 → 15.
+
 **2026-07-22** :
+- **🔥 Page blanche = traduction auto du navigateur vs React (versions-app).**
+  Cause enfin identifiée grâce à la télémétrie posée la veille : 4 entrées
+  `client_errors` chez verdoljose2 (Edge 150 / Windows, page `/fiche/...`),
+  toutes `Failed to execute 'removeChild' on 'Node': The node to be removed is
+  not a child of this node`, source `react-boundary`. C'est LA signature d'une
+  traduction automatique de navigateur : elle remplace les nœuds de texte que
+  React gère, puis React tente de retirer des nœuds qui ne sont plus là →
+  exception → arbre entier démonté → page blanche. Déclencheur : `index.html`
+  déclarait `<html lang="en">` sur du contenu FRANÇAIS, donc Edge détectait
+  l'incohérence et traduisait. Fix (versions-app) : `lang="fr"` +
+  `translate="no"` + `class="notranslate"` + `<meta name="google"
+  content="notranslate">` dans `index.html`, et `document.documentElement.lang`
+  synchronisé avec le sélecteur FR/EN dans `App.jsx`. Aucune perte pour
+  l'utilisateur (l'app sert déjà FR et EN nativement). **Règle : sur une SPA
+  React, déclarer la bonne langue ET bloquer la traduction navigateur — sinon
+  crash aléatoire, invisible chez le dev, et qui survit à tous les déploiements
+  puisqu'il vient d'un réglage du navigateur de l'utilisateur.**
 - **🔥 Idempotence serveur anti-double-débit sur `/start`** (`api/_analyze.js`).
   Le fix front du 2026-07-21 (remontage React, cf. ci-dessous) N'A PAS suffi :
   oliviermess@orange.fr, abonné le 2026-07-21 22:32 CEST (donc bundle rechargé
