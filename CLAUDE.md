@@ -548,3 +548,17 @@ dans le prompt Gemini via `opts.extraContext` (apposé au prompt dans
 - `api/_chat.js` : si le body contient un `trackId` valide → mode fil : `messages` (envoyés par le site, avec `source`) passent par `toModelMessages` (40 derniers, préfixe `[depuis le plugin DAW] ` sur les questions venues du plugin), une phrase dans le bloc meta explique que le fil couvre tout le titre, et l'échange est enregistré (`source: 'site'`). Réponse `{ reply, persisted }`. Sans `trackId` : comportement historique inchangé.
 - `api/_plugin.js` `/feedback` : si `context.trackId` (plugin ≥ 1.0.10) et JWT valide → les 16 derniers messages du fil du titre (site + plugin, 1500 caractères max chacun, mode strict) REMPLACENT `context.history` ; l'échange est enregistré après la réponse (`source: 'plugin'`, sans attendre). Fil vide ou pas de trackId → historique local du plugin comme avant.
 - Vérification rapide : `node -e "require('./lib/chatThread')"` et les logs Railway `[plugin/feedback] … historique: N messages (fil du titre|local)`.
+
+## Chat unifié, étape 2 : le plugin affiche les messages du site (2026-11-11)
+
+- `GET /api/plugin/thread?trackId=<uuid>&after=<id>&source=site` (secret
+  plugin + JWT Bearer obligatoire, lecture seule, aucun quota). Appelée par
+  le plugin >= 1.0.11 à l'ouverture, à la liaison d'un titre, puis toutes
+  les 30 s par éditeur ouvert.
+- `lib/chatThread.js` → `loadThreadSince({ userId, trackId, afterId, source, limit })`
+  renvoie `{ messages, cursor }`. `cursor` = id du dernier message du fil
+  (toutes origines), lu AVANT les messages et utilisé comme borne haute :
+  un message écrit entre les deux lectures est servi au tour suivant.
+  `after = 0` → première synchro, 6 derniers messages ; sinon 40 max.
+- Réponses : 400 `track_id_required`, 401 `auth_required` (JWT expiré → le
+  plugin rafraîchit), 503 `thread_unavailable`.

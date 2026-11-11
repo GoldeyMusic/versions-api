@@ -14,7 +14,7 @@
 
 const express = require('express');
 const { chat } = require('../lib/claude');
-const { isUuid, resolveUserId, loadThread, appendExchange, toModelMessages } = require('../lib/chatThread');
+const { isUuid, resolveUserId, loadThread, loadThreadSince, appendExchange, toModelMessages } = require('../lib/chatThread');
 const router = express.Router();
 
 // ─── Auth shared-secret (MVP) ────────────────────────────────────
@@ -389,6 +389,46 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
     console.error('[plugin/feedback] error:', err && err.message);
     // Claude a échoué après la conso → rembourse le message (jamais débiter sur échec).
     if (chatConsumed) await callPluginQuotaRpc('plugin_chat_refund', userToken);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// ─── Fil du titre pour le plugin (chat unifié, étape 2) ──────────
+// GET /api/plugin/thread?trackId=<uuid>&after=<id>&source=site
+// Le plugin (>= 1.0.11) l'appelle à l'ouverture, quand on lie un titre, puis
+// toutes les 30 s : il affiche dans son chat les messages posés sur le site.
+// Lecture seule, gratuite (aucun quota, aucun appel au modèle). Le fil est
+// privé : l'utilisateur vient du JWT, jamais de la requête.
+//   after = 0 → première synchro : les 6 derniers messages (3 échanges)
+//   after > 0 → tout ce qui est arrivé depuis (40 max par appel)
+router.get('/thread', requirePluginAuth, async (req, res) => {
+  try {
+    const trackId = String(req.query.trackId || '');
+    if (!isUuid(trackId)) return res.status(400).json({ error: 'track_id_required' });
+    const userToken = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    const userId = await resolveUserId(userToken);
+    if (!userId) return res.status(401).json({ error: 'auth_required' });
+
+    const afterRaw = Number.parseInt(String(req.query.after || '0'), 10);
+    const afterId = Number.isSafeInteger(afterRaw) && afterRaw > 0 ? afterRaw : 0;
+    const source = req.query.source === 'site' || req.query.source === 'plugin' ? req.query.source : null;
+
+    const out = await loadThreadSince({ userId, trackId, afterId, source, limit: afterId > 0 ? 40 : 6 });
+    if (!out) return res.status(503).json({ error: 'thread_unavailable' });
+
+    return res.json({
+      cursor: out.cursor,
+      messages: out.messages.map((m) => ({
+        id: Number(m.id),
+        role: m.role,
+        source: m.source,
+        content: typeof m.content === 'string' && m.content.length > 6000
+          ? m.content.slice(0, 6000) + '…'
+          : m.content,
+      })),
+    });
+  } catch (err) {
+    console.error('[plugin/thread] error:', err.message);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
