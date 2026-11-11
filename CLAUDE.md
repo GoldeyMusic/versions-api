@@ -541,3 +541,10 @@ dans le prompt Gemini via `opts.extraContext` (apposé au prompt dans
 - `customer.subscription.deleted` remet `sub_interval / sub_period_*` à NULL (monthly_grant = 0 arrête déjà la livraison).
 - Libellés Solo ajoutés à `lib/welcomeSubscriber.js` (PLAN_META) et `lib/lifecycleEmails.js` (PLAN_LABELS).
 - Garde anti-double abonnement : `POST /api/billing/checkout` en mode `subscription` renvoie `409 already_subscribed` si le compte a déjà un abonnement vivant (vérifié côté Stripe ; `canceled` / introuvable ne bloque pas). Le changement de formule en un clic n'existe donc pas : résilier d'abord, ou traitement manuel.
+
+## Chat unifié, étape 1 : mémoire commune site + plugin (2026-11-11)
+
+- `lib/chatThread.js` : seul accès à `track_chat_messages` (migration 060, dépôt versions-app). `resolveUserId(token)`, `loadThread({userId, trackId, limit})`, `appendExchange({userId, trackId, versionId, source, question, answer})`, `toModelMessages(items, opts)`. Aucune fonction ne throw : la mémoire ne doit jamais faire échouer une réponse.
+- `api/_chat.js` : si le body contient un `trackId` valide → mode fil : `messages` (envoyés par le site, avec `source`) passent par `toModelMessages` (40 derniers, préfixe `[depuis le plugin DAW] ` sur les questions venues du plugin), une phrase dans le bloc meta explique que le fil couvre tout le titre, et l'échange est enregistré (`source: 'site'`). Réponse `{ reply, persisted }`. Sans `trackId` : comportement historique inchangé.
+- `api/_plugin.js` `/feedback` : si `context.trackId` (plugin ≥ 1.0.10) et JWT valide → les 16 derniers messages du fil du titre (site + plugin, 1500 caractères max chacun, mode strict) REMPLACENT `context.history` ; l'échange est enregistré après la réponse (`source: 'plugin'`, sans attendre). Fil vide ou pas de trackId → historique local du plugin comme avant.
+- Vérification rapide : `node -e "require('./lib/chatThread')"` et les logs Railway `[plugin/feedback] … historique: N messages (fil du titre|local)`.

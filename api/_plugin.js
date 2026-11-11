@@ -14,6 +14,7 @@
 
 const express = require('express');
 const { chat } = require('../lib/claude');
+const { isUuid, resolveUserId, loadThread, appendExchange, toModelMessages } = require('../lib/chatThread');
 const router = express.Router();
 
 // ─── Auth shared-secret (MVP) ────────────────────────────────────
@@ -235,7 +236,7 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
     // system prompt (valeurs ACTUELLES) — les tours passés sont du texte nu.
     // Champ absent (vieux binaire) → historique vide → comportement d'avant.
     const history = Array.isArray(context && context.history) ? context.history : [];
-    const historyMessages = [];
+    let historyMessages = [];
     for (const t of history.slice(-8)) {
       const q = t && typeof t.q === 'string' ? t.q.trim() : '';
       const a = t && typeof t.a === 'string' ? t.a.trim() : '';
@@ -244,13 +245,42 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       historyMessages.push({ role: 'assistant', content: a.slice(0, 2000) });
     }
 
+    // ── Chat unifié (étape 1, plugin ≥ 1.0.10, 2026-11-11) ──
+    // context.trackId = le titre versions.studio lié à la session. Quand il
+    // est fourni (et le JWT valide), la mémoire de conversation devient le
+    // FIL DU TITRE, partagé avec le chat de la fiche sur le site (table
+    // track_chat_messages, cf. lib/chatThread.js) : les 16 derniers messages
+    // des deux côtés remplacent l'historique local du plugin, et l'échange
+    // courant y est enregistré après la réponse. Fil vide, pas de trackId
+    // (vieux binaire, titre non lié) ou base indisponible → on garde
+    // l'historique local ci-dessus, comme avant.
+    const threadTrackId = isUuid(context && context.trackId) ? context.trackId : null;
+    let threadUserId = null;
+    let threadUsed = false;
+    if (threadTrackId) {
+      threadUserId = await resolveUserId(userToken);
+      if (threadUserId) {
+        const thread = await loadThread({ userId: threadUserId, trackId: threadTrackId, limit: 16 });
+        const fromThread = toModelMessages(thread, {
+          maxMessages: 16,
+          maxChars: 1500,
+          userTagFor: { site: '[posé sur le site, dans le chat de la fiche] ' },
+          strict: true,
+        });
+        if (fromThread.length > 0) {
+          historyMessages = fromThread;
+          threadUsed = true;
+        }
+      }
+    }
+
     // Diagnostic Console View : visible dans les logs Railway. Permet de
     // vérifier en 10 s si le plugin envoie bien context.console (sinon =
     // vieux binaire en mémoire dans Logic).
     const consoleInfo = Array.isArray(context && context.console)
       ? `${context.console.length} pistes (${context.console.filter((t) => t.playing).length} en lecture)`
       : 'ABSENT';
-    console.log(`[plugin/feedback] console: ${consoleInfo} · canal: ${(context && context.instrumentType) || '?'} · historique: ${historyMessages.length / 2} tours`);
+    console.log(`[plugin/feedback] console: ${consoleInfo} · canal: ${(context && context.instrumentType) || '?'} · historique: ${historyMessages.length} messages (${threadUsed ? 'fil du titre' : 'local'})`);
 
     const meteringText = formatMetering(metering);
     const contextText = formatContext(context);
@@ -280,7 +310,11 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
           `- Ce fil est TA conversation en cours avec cet utilisateur — c'est le contexte le plus récent, il PRIME sur tout le reste.\n` +
           `- Les références sans antécédent ("ça", "ce problème", "le 1er point", "comment je corrige") renvoient D'ABORD au fil ci-dessus s'il contient la réponse, SINON au verdict express, SINON à la fiche.\n` +
           `- NE répète PAS les chiffres, mesures ou explications déjà donnés dans le fil, SAUF si les valeurs ont changé — les mesures de CE system prompt sont les valeurs ACTUELLES, seule source de chiffres à jour (celles citées dans les vieux messages du fil sont périmées).\n` +
-          `- Réponds dans la continuité : court, ciblé sur la question posée. Pas de nouvelle analyse complète si on ne te la demande pas.\n\n`
+          `- Réponds dans la continuité : court, ciblé sur la question posée. Pas de nouvelle analyse complète si on ne te la demande pas.\n` +
+          (threadUsed
+            ? `- Ce fil est PARTAGÉ avec le chat de la fiche sur versions.studio : les questions marquées "[posé sur le site, dans le chat de la fiche]" et leurs réponses (plus longues, fondées sur l'analyse complète du titre) en font partie. Tu peux t'y référer ("comme vu dans ta fiche…"), sans les réciter. Ne recopie jamais ce marqueur dans ta réponse.\n`
+            : ``) +
+          `\n`
         : ``) +
       `RÈGLES SESSION — CONSEIL INTER-PISTES (si un bloc SESSION est fourni) :\n` +
       `- Le bloc SESSION liste les autres pistes du projet équipées d'une instance Versions, avec leurs mesures live. La piste analysée (celle du chat) est "${(context && context.instrumentType) || 'inconnue'}". Si tu nommes cette vue, dis "la session" (jamais "la console").\n` +
@@ -337,6 +371,18 @@ router.post('/feedback', requirePluginAuth, async (req, res) => {
       .replace(/\*([^*\n]+)\*/g, '$1')   // *italique* → texte nu
       .replace(/^#{1,4}\s+/gm, '')       // titres markdown
       .replace(/^[-•*]\s+/gm, '- ');     // puces exotiques → tiret simple
+
+    // Mémoire commune : l'échange rejoint le fil du titre (sans retarder la
+    // réponse au plugin ; appendExchange ne throw jamais).
+    if (threadTrackId && threadUserId) {
+      appendExchange({
+        userId: threadUserId,
+        trackId: threadTrackId,
+        source: 'plugin',
+        question: question.trim(),
+        answer: cleanReply,
+      }).catch(() => {});
+    }
 
     return res.json({ reply: cleanReply, model: modelToUse });
   } catch (err) {

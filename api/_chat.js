@@ -1,6 +1,7 @@
 const express = require('express');
 const { chatWithUsage, MODEL } = require('../lib/claude');
 const { logChatCost } = require('../lib/costTracker');
+const { isUuid, appendExchange, toModelMessages } = require('../lib/chatThread');
 const router = express.Router();
 
 // Tente de charger le RAG PureMix (peut ne pas exister dans tous les envs)
@@ -27,10 +28,26 @@ router.post('/', async (req, res) => {
       messages, item, daw, fadrData, listening, fiche,
       title, artist, version,
       versionId = null,
+      trackId = null,
     } = req.body;
     // SÉCURITÉ : userId vient du JWT (requireAuth), pas du body.
     const userId = req.user?.id || null;
     if (!messages) return res.status(400).json({ error: 'messages required' });
+
+    // ─── Chat unifié (étape 1, 2026-11-11) ───────────────────────────
+    // Quand le site envoie trackId, la conversation est le fil du TITRE,
+    // partagé avec le plugin DAW (table track_chat_messages, cf.
+    // lib/chatThread.js). Le site envoie le fil tel qu'il l'affiche ; on le
+    // borne ici aux 40 derniers messages et on signale au modèle les
+    // questions posées depuis le plugin. Sans trackId (vieux front, titre
+    // pas encore en base) : comportement historique, messages inchangés.
+    const threadMode = isUuid(trackId);
+    const modelMessages = threadMode
+      ? toModelMessages(messages, { maxMessages: 40, userTagFor: { plugin: '[depuis le plugin DAW] ' } })
+      : messages;
+    if (threadMode && modelMessages.length === 0) {
+      return res.status(400).json({ error: 'messages required' });
+    }
 
     const locale = (req.body.locale || 'fr').toString().toLowerCase().slice(0, 2);
     const isEn = locale === 'en';
@@ -71,6 +88,15 @@ router.post('/', async (req, res) => {
       const metaParts = [];
       if (title) metaParts.push(`Morceau actuellement analysé : "${title}"${artist ? ' — ' + artist : ''}.`);
       if (version) metaParts.push(`Version affichée : ${version}.`);
+      if (threadMode) {
+        metaParts.push(
+          `Le fil de conversation couvre TOUT le titre, pas seulement cette version : il peut contenir des échanges ` +
+          `sur des versions précédentes, et des questions marquées "[depuis le plugin DAW]" posées pendant le mixage ` +
+          `(l'assistant du plugin y a répondu en très court, à partir des mesures en direct de la session). ` +
+          `Tiens-en compte comme d'une mémoire commune, mais la fiche et l'écoute ci-dessous sont celles de la version affichée : ` +
+          `en cas de divergence avec un ancien message, ce sont elles qui font foi.`
+        );
+      }
       const metaText = metaParts.length > 0 ? metaParts.join('\n') : '(pas de métadonnées de morceau)';
 
       // Bloc 3 — fiche + écoute (gros JSON, ~le plus gros morceau du prompt). Stable pendant la conv.
@@ -145,14 +171,14 @@ router.post('/', async (req, res) => {
         `${langDirective}, paramètres précis, alternative gratuite pour chaque plugin.`;
     }
 
-    const result = await chatWithUsage(messages, systemPayload);
+    const result = await chatWithUsage(modelMessages, systemPayload);
 
     // Fire-and-forget : on ne bloque pas la réponse au client si le log échoue.
     // logChatCost ne throw jamais (cf. costTracker.js).
     logChatCost({
       userId,
       versionId,
-      messageCount: Array.isArray(messages) ? messages.length : 0,
+      messageCount: Array.isArray(modelMessages) ? modelMessages.length : 0,
       ragUsed,
       locale,
       claudeUsage: result.usage,
@@ -160,7 +186,23 @@ router.post('/', async (req, res) => {
       claudeModel: result.model || MODEL,
     }).catch((e) => console.warn('[chat] logChatCost rejected:', e.message));
 
-    return res.json({ reply: result.reply });
+    // Mémoire commune : l'échange rejoint le fil du titre. On attend l'écriture
+    // (quelques dizaines de ms) pour dire au front si c'est enregistré ; un
+    // échec n'empêche jamais la réponse (appendExchange ne throw pas).
+    let persisted = false;
+    if (threadMode && userId) {
+      const lastUser = [...messages].reverse().find((m) => m && m.role === 'user');
+      persisted = await appendExchange({
+        userId,
+        trackId,
+        versionId,
+        source: 'site',
+        question: lastUser?.content || '',
+        answer: result.reply,
+      });
+    }
+
+    return res.json({ reply: result.reply, persisted });
   } catch (err) {
     console.error('[chat] error:', err.message);
     return res.status(500).json({ error: 'internal_error' });
