@@ -100,6 +100,42 @@ router.post('/checkout', express.json({ limit: '10kb' }), async (req, res) => {
 
     const stripe = getStripe();
 
+    // Garde anti-double abonnement (2026-11-11) : un compte déjà abonné qui
+    // relance un checkout d'abonnement (mensuel → annuel, Indie → Pro…) se
+    // retrouverait avec DEUX abonnements Stripe, donc deux prélèvements. On
+    // refuse (409 already_subscribed) ; le front invite à résilier d'abord
+    // ou à nous écrire. Les packs (mode payment) ne sont pas concernés.
+    if (checkoutMode === 'subscription') {
+      const { data: creditRow, error: creditErr } = await getSbServiceRole()
+        .from('user_credits')
+        .select('stripe_subscription_id, monthly_grant')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (creditErr) {
+        console.error('[billing/checkout] subscription lookup failed:', creditErr.message);
+        return res.status(500).json({ error: 'checkout_failed' });
+      }
+      let alreadySubscribed = Number(creditRow?.monthly_grant || 0) > 0;
+      if (creditRow?.stripe_subscription_id) {
+        try {
+          const existing = await stripe.subscriptions.retrieve(creditRow.stripe_subscription_id);
+          // Un abonnement terminé côté Stripe ne bloque pas (base en retard).
+          alreadySubscribed = !['canceled', 'incomplete_expired'].includes(existing.status);
+        } catch (e) {
+          if (e?.code === 'resource_missing') {
+            alreadySubscribed = false;
+          } else {
+            console.error('[billing/checkout] stripe retrieve failed:', e.message);
+            return res.status(500).json({ error: 'checkout_failed' });
+          }
+        }
+      }
+      if (alreadySubscribed) {
+        console.log(`[billing/checkout] user ${user.id} already subscribed → 409 (planKey=${planKey})`);
+        return res.status(409).json({ error: 'already_subscribed' });
+      }
+    }
+
     // success_url : retour direct dashboard. Le webhook crédite l'user
     // en arrière-plan. Pas besoin de query params : la sidebar montrera
     // le nouveau solde au prochain refresh / login.

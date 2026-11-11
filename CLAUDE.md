@@ -540,3 +540,4 @@ dans le prompt Gemini via `opts.extraContext` (apposé au prompt dans
 - `GET /api/billing/subscription` renvoie `interval` et `nextGrantAt`. `POST /pause-subscription` refuse l'annuel (`annual_no_pause`).
 - `customer.subscription.deleted` remet `sub_interval / sub_period_*` à NULL (monthly_grant = 0 arrête déjà la livraison).
 - Libellés Solo ajoutés à `lib/welcomeSubscriber.js` (PLAN_META) et `lib/lifecycleEmails.js` (PLAN_LABELS).
+- Garde anti-double abonnement : `POST /api/billing/checkout` en mode `subscription` renvoie `409 already_subscribed` si le compte a déjà un abonnement vivant (vérifié côté Stripe ; `canceled` / introuvable ne bloque pas). Le changement de formule en un clic n'existe donc pas : résilier d'abord, ou traitement manuel.
