@@ -28,6 +28,9 @@
  */
 
 const Stripe = require('stripe');
+// Charge .env.bench (gitignoré) si présent : permet de poser
+// STRIPE_SECRET_KEY dans ce fichier plutôt que sur la ligne de commande.
+try { require('./_benchEnv').loadEnvFile(); } catch (_) { /* optionnel */ }
 
 // ─── Catalogue à synchroniser avec versions-app/src/constants/plans.js ───
 // Grille 2026-11-06 (audit) : Solo 6,99 €/4 analyses, Pack Projet 6 analyses
@@ -43,12 +46,28 @@ const SUBSCRIPTIONS = [
   { key: 'sub_pro',   name: 'Versions — Abo Pro',   price_eur: 29.99, credits: 30 },
 ];
 
+// Abonnements ANNUELS (2026-11-11) : un 2e prix récurrent "year" posé sur
+// le MÊME produit Stripe que le mensuel (lookup par metadata.plan_key =
+// baseKey). 2 mois offerts. metadata.credits = enveloppe MENSUELLE : la 1re
+// est livrée par invoice.paid, les 11 suivantes par la tâche quotidienne
+// grant_annual_monthly_credits() (migration 059).
+// `key` ne sert qu'au filtre --only et au nom de la variable d'env ; le
+// plan_key écrit dans Stripe reste baseKey (sub_solo / sub_indie / sub_pro).
+const ANNUAL_SUBSCRIPTIONS = [
+  { key: 'sub_solo_year',  baseKey: 'sub_solo',  name: 'Versions — Abo Solo',  price_eur: 69,  credits: 4 },
+  { key: 'sub_indie_year', baseKey: 'sub_indie', name: 'Versions — Abo Indie', price_eur: 149, credits: 12 },
+  { key: 'sub_pro_year',   baseKey: 'sub_pro',   name: 'Versions — Abo Pro',   price_eur: 299, credits: 30 },
+];
+
 const KEY_TO_ENV = {
   pack_1:    'VITE_STRIPE_PRICE_PACK_1',
   pack_6:    'VITE_STRIPE_PRICE_PACK_6',
   sub_solo:  'VITE_STRIPE_PRICE_SUB_SOLO',
   sub_indie: 'VITE_STRIPE_PRICE_SUB_INDIE',
   sub_pro:   'VITE_STRIPE_PRICE_SUB_PRO',
+  sub_solo_year:  'VITE_STRIPE_PRICE_SUB_SOLO_YEAR',
+  sub_indie_year: 'VITE_STRIPE_PRICE_SUB_INDIE_YEAR',
+  sub_pro_year:   'VITE_STRIPE_PRICE_SUB_PRO_YEAR',
 };
 
 (async () => {
@@ -108,10 +127,31 @@ const KEY_TO_ENV = {
     envLines.push(`${KEY_TO_ENV[sub.key]}=${price.id}`);
   }
 
+  // ── Abos annuels ────
+  for (const sub of ANNUAL_SUBSCRIPTIONS.filter(wanted)) {
+    const product = await getOrCreateProduct(stripe, { ...sub, key: sub.baseKey });
+    const price = await stripe.prices.create({
+      product: product.id,
+      unit_amount: Math.round(sub.price_eur * 100),
+      currency: 'eur',
+      recurring: { interval: 'year' },
+      metadata: {
+        plan_key: sub.baseKey,
+        credits: String(sub.credits),
+        billing_interval: 'year',
+      },
+      nickname: `${sub.name} — yearly`,
+    });
+    console.log(`✓ ${sub.key.padEnd(14)} → ${price.id}`);
+    envLines.push(`${KEY_TO_ENV[sub.key]}=${price.id}`);
+  }
+
   // ── Sortie ────
   console.log('\n=== Variables d\'env à copier ===');
   console.log('# Versions-app (.env local + Vercel) :');
   for (const line of envLines) console.log(line);
+  console.log('\n# Versions-api (Railway) : si STRIPE_PRICE_WHITELIST est définie, y AJOUTER :');
+  console.log(envLines.map((l) => l.split('=')[1]).join(','));
   console.log('\n=== Étapes restantes ===');
   console.log('1. Colle les VITE_STRIPE_PRICE_* dans versions-app/.env (et Vercel env vars).');
   console.log('2. Crée le webhook Stripe (dashboard) → endpoint https://<versions-api>/api/billing/webhook');

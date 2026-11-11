@@ -17,6 +17,11 @@
  *                       → +N crédits dans bucket `sub` (cumulés tant qu'abo actif)
  *                       + maj monthly_grant / renews_at
  *                       Pas de reset au renouvellement.
+ *   - Abo annuel      : event `invoice.paid` (une fois par an) → +N crédits
+ *                       (1er mois) + sub_interval='year' ; les 11 mois
+ *                       suivants sont livrés en base par la tâche pg_cron
+ *                       grant_annual_monthly_credits() (migration 059).
+ *                       N = price.metadata.credits = enveloppe MENSUELLE.
  *   - Abo annulé      : event `customer.subscription.deleted`
  *                       → purge subscription_balance (bucket sub à 0), pack_balance intact
  *                       → reset monthly_grant à 0
@@ -241,7 +246,7 @@ async function resolveUserSubscription(req, res, tag) {
   const sb = getSbServiceRole();
   const { data: row, error: rowErr } = await sb
     .from('user_credits')
-    .select('stripe_subscription_id, monthly_grant, grace_balance, grace_expires_at')
+    .select('stripe_subscription_id, monthly_grant, monthly_renews_at, grace_balance, grace_expires_at')
     .eq('user_id', user.id)
     .maybeSingle();
   if (rowErr) {
@@ -272,15 +277,24 @@ function graceInfo(row) {
   return { balance: bal, expiresAt: exp };
 }
 
+// Intervalle de facturation lu sur le prix Stripe ('month' | 'year').
+function subscriptionInterval(sub) {
+  return sub?.items?.data?.[0]?.price?.recurring?.interval === 'year' ? 'year' : 'month';
+}
+
 function describeSubscription(sub, row) {
+  const interval = subscriptionInterval(sub);
   return {
     ok: true,
     active: sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due',
     status: sub.status,
     planKey: sub?.metadata?.plan_key || null,
+    interval,
     paused: !!sub.pause_collection,
     cancelAtPeriodEnd: sub.cancel_at_period_end === true,
-    periodEnd: sub.current_period_end || null,
+    periodEnd: sub.current_period_end || sub?.items?.data?.[0]?.current_period_end || null,
+    // Annuel : date de la prochaine enveloppe mensuelle de crédits.
+    nextGrantAt: interval === 'year' ? (row?.monthly_renews_at || null) : null,
     cancelAt: sub.cancel_at || null,
     grace: graceInfo(row),
   };
@@ -307,6 +321,9 @@ router.post('/pause-subscription', express.json({ limit: '1kb' }), async (req, r
     if (!ctx) return;
     const { sub, subId, stripe, row, user } = ctx;
     if (sub.status === 'canceled') return res.json({ ok: false, reason: 'canceled' });
+    // Pas de pause en annuel : l'année est déjà payée et les crédits sont
+    // livrés chaque mois quoi qu'il arrive (le front masque le bouton).
+    if (subscriptionInterval(sub) === 'year') return res.json({ ok: false, reason: 'annual_no_pause' });
     if (sub.pause_collection) return res.json({ ...describeSubscription(sub, row), alreadyPaused: true });
     let updated;
     try {
@@ -433,6 +450,14 @@ async function handleStripeEvent(event, stripe) {
     await sb.from('user_credits')
       .update({ monthly_grant: 0, monthly_renews_at: null, stripe_subscription_id: null })
       .eq('user_id', userId);
+    // Champs de la migration 059 (UPDATE séparé, cf. handleSubscriptionInvoice).
+    // monthly_grant = 0 suffit déjà à arrêter la livraison mensuelle annuelle.
+    {
+      const { error: metaErr } = await sb.from('user_credits')
+        .update({ sub_interval: null, sub_period_start: null, sub_period_end: null })
+        .eq('user_id', userId);
+      if (metaErr) console.error('[billing/webhook] sub_interval reset failed:', metaErr.message);
+    }
     // 3. Log revenue (montant 0 — aucun mouvement d'argent, juste un audit).
     await logRevenueEvent({
       sb,
@@ -696,7 +721,22 @@ async function fetchStripeNet({ stripe, paymentIntentId = null, chargeId = null,
   return { netEur: netApprox, feeEur: grossEur - netApprox, source: 'approximation_eee' };
 }
 
-// ─── Abo : facture mensuelle → crédite + maj monthly_grant ────
+// Ajoute N mois à une date ISO en bornant au dernier jour du mois (31 janv.
+// + 1 mois = 28/29 févr.), comme `timestamptz + interval '1 month'` côté
+// Postgres — la tâche grant_annual_monthly_credits() recalcule de toute
+// façon ses échéances depuis sub_period_start.
+function addMonthsIso(iso, months) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.getUTCDate();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  d.setUTCDate(Math.min(day, lastDay));
+  return d.toISOString();
+}
+
+// ─── Abo : facture (mensuelle ou annuelle) → crédite + maj monthly_grant ────
 async function handleSubscriptionInvoice({ invoice, subscriptionId, stripe, eventId }) {
   // subscriptionId est résolu en amont par getInvoiceSubscriptionId() pour
   // tolérer le déplacement du champ vers invoice.parent.subscription_details
@@ -714,6 +754,13 @@ async function handleSubscriptionInvoice({ invoice, subscriptionId, stripe, even
     throw new Error(`subscription has no credits metadata (planKey=${planKey})`);
   }
 
+  // Intervalle de facturation (annuel ajouté 2026-11-11). `credits` reste
+  // l'enveloppe MENSUELLE dans les deux cas : en annuel, cette facture livre
+  // le 1er mois et la tâche quotidienne grant_annual_monthly_credits()
+  // (pg_cron, migration 059) livre les 11 suivants.
+  const interval = item?.price?.recurring?.interval === 'year' ? 'year' : 'month';
+  const planLabel = interval === 'year' ? `${planKey} (annuel)` : planKey;
+
   // Modèle Splice (révision 2026-04-29) : pas de reset au renouvellement.
   // Les crédits abo se cumulent dans subscription_balance tant que l'abo
   // est actif. La purge se fait UNIQUEMENT à la résiliation (event
@@ -728,14 +775,23 @@ async function handleSubscriptionInvoice({ invoice, subscriptionId, stripe, even
     reason: 'subscription_grant',
     bucket: 'sub',
     stripeEventId: eventId,
-    notes: `Abo ${planKey} - renew (invoice ${invoice.id})`,
+    notes: `Abo ${planLabel} - renew (invoice ${invoice.id})`,
   });
 
   // Met à jour les méta abo sur user_credits
   // current_period_end : champ déplacé sur l'item dans l'API 2025-09-30.clover
   // (Stripe a migré le concept au niveau item pour les abos multi-prix).
   const periodEndSec = sub.current_period_end || item?.current_period_end || null;
-  const renewsAt = periodEndSec ? new Date(periodEndSec * 1000).toISOString() : null;
+  const periodStartSec = sub.current_period_start || item?.current_period_start || null;
+  const periodEndAt = periodEndSec ? new Date(periodEndSec * 1000).toISOString() : null;
+  const periodStartAt = periodStartSec ? new Date(periodStartSec * 1000).toISOString() : null;
+  // monthly_renews_at = date de la PROCHAINE enveloppe de crédits :
+  //   - mensuel : la prochaine facture (fin de période) ;
+  //   - annuel  : dans un mois (livrée par la tâche quotidienne), la fin de
+  //     période payée vivant dans sub_period_end.
+  const renewsAt = interval === 'year'
+    ? addMonthsIso(periodStartAt || new Date().toISOString(), 1)
+    : periodEndAt;
   await sb.from('user_credits')
     .update({
       monthly_grant: credits,
@@ -744,6 +800,23 @@ async function handleSubscriptionInvoice({ invoice, subscriptionId, stripe, even
       stripe_customer_id: invoice.customer || null,
     })
     .eq('user_id', userId);
+  // Colonnes de la migration 059, dans un UPDATE séparé : si la migration
+  // n'est pas encore appliquée, l'échec est journalisé sans empêcher la
+  // mise à jour ci-dessus (les abos mensuels ne dépendent pas de ces champs).
+  {
+    const { error: metaErr } = await sb.from('user_credits')
+      .update({ sub_interval: interval, sub_period_start: periodStartAt, sub_period_end: periodEndAt })
+      .eq('user_id', userId);
+    if (metaErr) {
+      console.error(`[billing/webhook] sub_interval update failed (migration 059 appliquée ?) user ${userId}:`, metaErr.message);
+      if (interval === 'year') {
+        // Sans ces champs, les 11 enveloppes mensuelles suivantes ne
+        // partiraient pas : on fait échouer le webhook pour que Stripe rejoue
+        // (l'enveloppe du 1er mois est idempotente via stripe_event_id).
+        throw new Error(`annual subscription meta not persisted: ${metaErr.message}`);
+      }
+    }
+  }
 
   // Log revenue : récupère le VRAI net via balance_transaction.fee Stripe.
   // Le champ invoice.charge a été supprimé en API 2025-04-30.basil au profit
@@ -759,7 +832,7 @@ async function handleSubscriptionInvoice({ invoice, subscriptionId, stripe, even
     net_eur: netEur,
     stripe_id: invoice.id || null,
     stripe_event_id: eventId,
-    notes: `Abo ${planKey} renewal (invoice ${invoice.id}, ${credits} credits)`,
+    notes: `Abo ${planLabel} renewal (invoice ${invoice.id}, ${credits} credits${interval === 'year' ? ' / mois' : ''})`,
   });
 
   // ─── Notif ops ────────────────────────────────────────────
@@ -770,23 +843,23 @@ async function handleSubscriptionInvoice({ invoice, subscriptionId, stripe, even
   const currency = (invoice.currency || 'eur').toUpperCase();
   const label = isInitial ? 'Nouvel abonnement' : 'Renouvellement abo';
   await notifyOps({
-    subject: `[Versions] ${label} · ${planKey} · ${grossEur.toFixed(2)} ${currency}`,
+    subject: `[Versions] ${label} · ${planLabel} · ${grossEur.toFixed(2)} ${currency}`,
     html: renderOpsEmail({
-      title: `${label} · ${planKey}`,
+      title: `${label} · ${planLabel}`,
       intro: isInitial
-        ? `${customerEmail} vient de souscrire à l'abonnement ${planKey}.`
-        : `Renouvellement automatique de l'abonnement ${planKey} pour ${customerEmail}.`,
+        ? `${customerEmail} vient de souscrire à l'abonnement ${planLabel}.`
+        : `Renouvellement automatique de l'abonnement ${planLabel} pour ${customerEmail}.`,
       rows: [
         { label: 'Client', value: customerEmail },
-        { label: 'Plan', value: planKey },
+        { label: 'Plan', value: planLabel },
         { label: 'Type', value: isInitial ? 'Création' : 'Renouvellement' },
         { label: 'Montant brut', value: `${grossEur.toFixed(2)} ${currency}` },
         { label: 'Net (après frais Stripe)', value: `${netEur.toFixed(2)} ${currency}` },
-        { label: 'Crédits livrés', value: `+${credits}` },
+        { label: 'Crédits livrés', value: interval === 'year' ? `+${credits} (puis +${credits} chaque mois)` : `+${credits}` },
         { label: 'User ID', value: userId },
         { label: 'Subscription', value: subscriptionId, link: stripeUrl({ livemode, kind: 'subscriptions', id: subscriptionId }) },
         { label: 'Invoice', value: invoice.id, link: stripeUrl({ livemode, kind: 'invoices', id: invoice.id }) },
-        { label: 'Prochaine facture', value: renewsAt ? renewsAt.slice(0, 10) : '—' },
+        { label: 'Prochaine facture', value: periodEndAt ? periodEndAt.slice(0, 10) : '—' },
         { label: 'Mode', value: livemode ? 'live' : 'test' },
       ],
       footerLink: stripeUrl({ livemode, kind: 'subscriptions', id: subscriptionId }),

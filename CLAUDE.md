@@ -532,3 +532,11 @@ dans le prompt Gemini via `opts.extraContext` (apposé au prompt dans
   même user. **À terme** : conseils dynamiques basés sur les vraies
   analyses du mois (recurring weaknesses dans les fiches → conseil
   ciblé). Tracké aussi dans `~/versions-app/docs/ROADMAP.md` Bloc 4.
+
+## Abonnements annuels (2026-11-11)
+
+- `scripts/init_stripe_catalog.js` : `ANNUAL_SUBSCRIPTIONS` (69 / 149 / 299 €), prix `recurring.interval = 'year'` posé sur le MÊME produit que le mensuel, `metadata.credits` = enveloppe MENSUELLE, `metadata.plan_key` = clé de base. Lancer avec `--only=sub_solo_year,sub_indie_year,sub_pro_year` (sinon doublons de prix). Le script charge `.env.bench` (y poser `STRIPE_SECRET_KEY`). Si `STRIPE_PRICE_WHITELIST` est définie sur Railway, y ajouter les 3 nouveaux prix.
+- `api/_billing.js` : `handleSubscriptionInvoice` lit `price.recurring.interval`. Annuel → livre le 1er mois, `monthly_renews_at` = début de période + 1 mois, écrit `sub_interval / sub_period_start / sub_period_end` (UPDATE séparé ; si la migration 059 manque, un abonnement annuel fait échouer le webhook pour que Stripe rejoue, un mensuel journalise seulement). Les 11 mois suivants sont livrés EN BASE par `grant_annual_monthly_credits()` (pg_cron horaire, migration 059 dans versions-app) — aucun code API.
+- `GET /api/billing/subscription` renvoie `interval` et `nextGrantAt`. `POST /pause-subscription` refuse l'annuel (`annual_no_pause`).
+- `customer.subscription.deleted` remet `sub_interval / sub_period_*` à NULL (monthly_grant = 0 arrête déjà la livraison).
+- Libellés Solo ajoutés à `lib/welcomeSubscriber.js` (PLAN_META) et `lib/lifecycleEmails.js` (PLAN_LABELS).
