@@ -461,8 +461,15 @@ const expressUpload = multerExpress({ storage: multerExpress.memoryStorage(), li
 // donc rester complémentaire (solde + ce qu'on obtient), sans répéter le
 // bouton ni l'URL. À la prochaine release plugin, retirer la ligne C++ et
 // remettre l'URL ici.
-function expressSiteNudge(credits) {
+function expressSiteNudge(credits, lang) {
   const site = process.env.VERSIONS_SITE_URL || 'https://versions.studio';
+  if (lang === 'en') {
+    if (credits >= 1) {
+      const n = credits === 1 ? '1 full analysis' : `${credits} full analyses`;
+      return `→ You have ${n} left: import this mix for the score out of 100, the release verdict and the element-by-element action plan.`;
+    }
+    return `→ Your full-analysis balance is at 0: top up on ${site}/pricing (from €6.99/month).`;
+  }
   if (credits >= 1) {
     const n = credits === 1 ? '1 analyse complète' : `${credits} analyses complètes`;
     return `→ Il te reste ${n} : importe ce mix pour la note sur 100, le verdict de sortie et le plan d'action élément par élément.`;
@@ -507,6 +514,9 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
 
     const { title, vocalType, channelType,
             userLevel, userMonitors, userHeadphones, userGenres } = req.body;
+    // Langue de l'interface du plugin (1.0.12+) : verdict et libellés en
+    // anglais si "en", français sinon (plugins plus anciens : pas de champ).
+    const lang = String(req.body.lang || '').toLowerCase() === 'en' ? 'en' : 'fr';
 
     // ── Contexte additionnel (2026-06-12) ──────────────────────────────
     // 1) PISTE ISOLÉE : l'express écoute l'instance du plugin — sur une
@@ -546,17 +556,17 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
 
     const listening = await analyzeListeningExpress(
       req.file.buffer, req.file.mimetype || 'audio/wav',
-      title || 'ce morceau', '', undefined, vocalType || 'vocal', 'fr',
+      title || (lang === 'en' ? 'this track' : 'ce morceau'), '', undefined, vocalType || 'vocal', lang,
       extra.length ? { extraContext: extra.join('\n\n') } : {}
     );
     const parts = [];
     if (listening && listening.impression) parts.push(String(listening.impression));
     if (listening && Array.isArray(listening.a_travailler) && listening.a_travailler.length) {
-      parts.push('A travailler : ' + listening.a_travailler.join(' ; '));
+      parts.push((lang === 'en' ? 'To work on: ' : 'A travailler : ') + listening.a_travailler.join(' ; '));
     } else if (listening && Array.isArray(listening.points_forts) && listening.points_forts.length) {
-      parts.push('Points forts : ' + listening.points_forts.slice(0, 3).join(' ; '));
+      parts.push((lang === 'en' ? 'Strengths: ' : 'Points forts : ') + listening.points_forts.slice(0, 3).join(' ; '));
     }
-    let reply = parts.join('\n\n') || 'Ecoute effectuee.';
+    let reply = parts.join('\n\n') || (lang === 'en' ? 'Listen done.' : 'Ecoute effectuee.');
 
     // ── Pont plugin → site (audit 2026-11-06, niveau A : backend seul) ──
     // L'express donne la réponse courte ; la fiche complète vit sur le
@@ -570,7 +580,7 @@ router.post('/express', requirePluginAuth, expressUpload.single('file'), async (
         const account = await callPluginQuotaRpc('plugin_get_account', userTokenExpress);
         const credits = Number(account?.credits);
         if (Number.isFinite(credits)) {
-          reply += '\n\n' + expressSiteNudge(credits);
+          reply += '\n\n' + expressSiteNudge(credits, lang);
         }
       }
     } catch (e) {
