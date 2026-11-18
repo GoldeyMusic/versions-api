@@ -191,6 +191,14 @@ Optionnelles :
 
 ## Livré récemment
 
+**2026-11-18** :
+- **Détail des ventes pour le cockpit** (`api/_stats.js`, même route
+  `/api/stats/downloads`) : `ca_total_eur`, `sales_list` (90 j, 200 max,
+  offre tirée de `plan_key`), `daily_sales_90d`, `daily_signups_90d`.
+  Lus dans Stripe en une passe sur toutes les charges (équipe exclue, nets
+  de remboursements), fail-soft comme `mrr_eur`. Test sans réseau :
+  `node scripts/test_stats_sales.js`.
+
 **2026-11-06** :
 - **Genre à l'écoute (D.2)** : `lib/gemini.js` demande dans les deux
   templates un `genre_estime` (vocabulaire contraint `GENRE_VOCAB` de

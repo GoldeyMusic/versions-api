@@ -48,6 +48,13 @@
  *   panne), on les OMET du JSON au lieu d'envoyer des zéros faux — les
  *   stats plugin existantes restent servies normalement.
  *
+ * Détail des ventes (fiche Versions du cockpit — ajout 2026-11-18) :
+ *   - ca_total_eur : CA depuis le début (abos + packs, nets, équipe exclue)
+ *   - sales_list : [{date, email, offre, montant_eur, type}] 90 j, 200 max
+ *   - daily_sales_90d : [{date, count, eur}] ; daily_signups_90d :
+ *     [{date, count}] (la série `daily` reste celle des installations).
+ *   Optionnels, même logique fail-soft que les revenus.
+ *
  * Annuaire unifié (vue utilisateurs de l'archipel — ajout 2026-07-29) :
  *   - users_list : [{ email, name, created_at, premium }] de tous les
  *     inscrits réels (équipe interne STATS_EXCLUDE_EMAILS exclue).
@@ -183,6 +190,109 @@ async function computeSales30d() {
   return { eur: Math.round(netCents) / 100, count };
 }
 
+// ─── Détail des ventes (fiche Versions du cockpit — ajout 2026-11-18) ──
+// Une seule lecture de TOUTES les charges Stripe réussies en euros (hors
+// équipe, nettes des remboursements, abonnements ET packs) :
+//   - ca_total_eur    : chiffre d'affaires depuis le début
+//   - sales_list      : [{date, email, offre, montant_eur, type}] des 90
+//                       derniers jours, plus récentes d'abord (200 max)
+//   - daily_sales_90d : [{date, count, eur}] sur 90 jours (zéros compris)
+// L'offre vient de plan_key, posée par le checkout sur la PaymentIntent
+// (packs) et sur l'abonnement (repris par les lignes de facture).
+const OFFER_LABELS = {
+  pack_1: '1 analyse',
+  pack_5: 'Pack 5',
+  pack_6: 'Pack Projet',
+  sub_solo: 'Solo',
+  sub_indie: 'Indie',
+  sub_pro: 'Pro',
+};
+const SUB_MONTHLY_EUR = { sub_solo: 6.99, sub_indie: 14.99, sub_pro: 29.99 };
+
+function offerOf(ch) {
+  const inv = ch.invoice && typeof ch.invoice === 'object' ? ch.invoice : null;
+  if (inv || ch.invoice) {
+    const line = inv && inv.lines && inv.lines.data && inv.lines.data[0];
+    const key = (line && line.metadata && line.metadata.plan_key)
+      || (inv && inv.subscription_details && inv.subscription_details.metadata
+        && inv.subscription_details.metadata.plan_key)
+      || null;
+    let interval = line && line.price && line.price.recurring && line.price.recurring.interval;
+    // Repli si la ligne n'a pas son prix : un montant bien au-delà du
+    // mensuel ne peut être qu'un annuel.
+    if (!interval && key && SUB_MONTHLY_EUR[key]) {
+      interval = (ch.amount / 100) > SUB_MONTHLY_EUR[key] * 2 ? 'year' : 'month';
+    }
+    const base = OFFER_LABELS[key] || key || 'Abonnement';
+    return { type: 'abonnement', offre: interval === 'year' ? `${base} (annuel)` : base };
+  }
+  const pi = ch.payment_intent && typeof ch.payment_intent === 'object' ? ch.payment_intent : null;
+  const key = (pi && pi.metadata && pi.metadata.plan_key) || (ch.metadata && ch.metadata.plan_key) || null;
+  return { type: 'achat', offre: OFFER_LABELS[key] || key || 'Achat' };
+}
+
+function lastDays(n, now = Date.now()) {
+  const out = [];
+  for (let i = n - 1; i >= 0; i -= 1) {
+    out.push(new Date(now - i * 86400000).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+async function computeSalesDetail(stripe = getStripe(), now = Date.now()) {
+  const since90 = Math.floor(now / 1000) - 90 * 24 * 3600;
+  let totalCents = 0;
+  const list = [];
+  const byDay = new Map();
+  for await (const ch of stripe.charges.list({
+    limit: 100,
+    expand: ['data.invoice', 'data.payment_intent'],
+  })) {
+    if (!ch.paid || ch.status !== 'succeeded') continue;
+    if (ch.currency !== 'eur') continue;
+    const email = (ch.billing_details && ch.billing_details.email) || ch.receipt_email || null;
+    if (isInternalEmail(email)) continue;
+    const net = ch.amount - (ch.amount_refunded || 0);
+    if (net <= 0) continue;
+    totalCents += net;
+    if (ch.created < since90) continue;
+    const day = new Date(ch.created * 1000).toISOString().slice(0, 10);
+    const { type, offre } = offerOf(ch);
+    list.push({
+      date: new Date(ch.created * 1000).toISOString(),
+      email,
+      offre,
+      montant_eur: Math.round(net) / 100,
+      type,
+    });
+    const d = byDay.get(day) || { count: 0, cents: 0 };
+    d.count += 1;
+    d.cents += net;
+    byDay.set(day, d);
+  }
+  list.sort((a, b) => (a.date < b.date ? 1 : -1));
+  return {
+    ca_total_eur: Math.round(totalCents) / 100,
+    sales_list: list.slice(0, 200),
+    daily_sales_90d: lastDays(90, now).map((date) => {
+      const d = byDay.get(date);
+      return { date, count: d ? d.count : 0, eur: d ? Math.round(d.cents) / 100 : 0 };
+    }),
+  };
+}
+
+// Inscriptions par jour sur 90 jours, tirées de users_list (équipe déjà
+// exclue). La série `daily` historique compte les INSTALLATIONS du plugin.
+function dailySignups90d(usersList, now = Date.now()) {
+  const counts = new Map();
+  for (const u of usersList || []) {
+    if (!u.created_at) continue;
+    const day = String(u.created_at).slice(0, 10);
+    counts.set(day, (counts.get(day) || 0) + 1);
+  }
+  return lastDays(90, now).map((date) => ({ date, count: counts.get(date) || 0 }));
+}
+
 // ─── Annuaire unifié : liste des inscrits réels ──────────────────
 // Pagination GoTrue admin (même pattern que lib/newsletter.js) puis
 // enrichissement en 2 requêtes batch : prenom (profiles) + premium
@@ -264,7 +374,7 @@ router.get('/downloads', async (req, res) => {
     // Stripe sont catchés individuellement : en cas d'échec on renvoie
     // null → champs omis du JSON (le cockpit affiche "en attente"),
     // sans casser les stats plugin.
-    const [rpcRes, usersTotal, mrrEur, sales30d, usersList] = await Promise.all([
+    const [rpcRes, usersTotal, mrrEur, sales30d, usersList, salesDetail] = await Promise.all([
       sb.rpc('plugin_install_stats', { exclude_emails: STATS_EXCLUDE_EMAILS }),
 
       // Total inscrits via GoTrue admin API. ⚠️ Le nombre total est renvoyé
@@ -294,6 +404,11 @@ router.get('/downloads', async (req, res) => {
         console.error('[stats/downloads] fetchUsersList:', e && e.message);
         return null;
       }),
+
+      computeSalesDetail().catch((e) => {
+        console.error('[stats/downloads] computeSalesDetail:', e && e.message);
+        return null;
+      }),
     ]);
 
     if (rpcRes.error) {
@@ -318,7 +433,13 @@ router.get('/downloads', async (req, res) => {
       } : {}),
       // Annuaire unifié (inscrits réels, équipe exclue). Optionnel : omis
       // si l'appel a échoué.
-      ...(Array.isArray(usersList) ? { users_list: usersList } : {}),
+      ...(Array.isArray(usersList) ? {
+        users_list: usersList,
+        daily_signups_90d: dailySignups90d(usersList),
+      } : {}),
+      // Détail des ventes (CA total, liste 90 j, courbe 90 j). Optionnel :
+      // omis si l'appel Stripe a échoué.
+      ...(salesDetail || {}),
     });
   } catch (err) {
     console.error('[stats/downloads] error:', err && err.message);
@@ -327,3 +448,5 @@ router.get('/downloads', async (req, res) => {
 });
 
 module.exports = router;
+// Pour les tests (scripts/test_stats_sales.js).
+module.exports._test = { computeSalesDetail, dailySignups90d, offerOf };
